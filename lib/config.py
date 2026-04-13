@@ -16,8 +16,9 @@ TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = _env("OPENAI_API_KEY")
 WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 VERCEL_URL = _env("VERCEL_URL")
-TURSO_DATABASE_URL = _env("TURSO_DATABASE_URL")
-TURSO_AUTH_TOKEN = _env("TURSO_AUTH_TOKEN")
+# Neon / Postgres. The Vercel/Neon integration auto-injects DATABASE_URL.
+# Fall back to POSTGRES_URL (also provided by some integrations) for convenience.
+DATABASE_URL = _env("DATABASE_URL") or _env("POSTGRES_URL")
 CRON_SECRET = _env("CRON_SECRET")
 
 

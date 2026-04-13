@@ -5,7 +5,7 @@ A Python Telegram bot deployed on **Vercel** (serverless) that tracks daily food
 - 📸 Photo analysis → calories, macros, allergen + Crohn's warnings
 - 📊 `/today` progress bars · `/history` 7-day summary · `/suggest_meal` AI recipe
 - 🌙 Automatic nightly summary via Vercel Cron
-- 💾 Turso (libSQL) database — no filesystem required
+- 💾 Neon Postgres (via Vercel Marketplace) — fully integrated, auto-injected env vars
 
 ---
 
@@ -13,10 +13,9 @@ A Python Telegram bot deployed on **Vercel** (serverless) that tracks daily food
 
 1. **Telegram bot** — create one with [@BotFather](https://t.me/BotFather), get the token.
 2. **OpenAI API key** — from [platform.openai.com/api-keys](https://platform.openai.com/api-keys). GPT-4o vision access.
-3. **Turso account** — free tier at [turso.tech](https://turso.tech).
-4. **Vercel account** — free tier at [vercel.com](https://vercel.com).
-5. **GitHub account** — to host the source and auto-deploy via Vercel's GitHub integration.
-6. **Python 3.11+** locally (for running the webhook-registration script).
+3. **Vercel account** — free tier at [vercel.com](https://vercel.com). Database (Neon) is installed from the Marketplace inside Vercel — no separate signup.
+4. **GitHub account** — to host the source and auto-deploy via Vercel's GitHub integration.
+5. **Python 3.11+** locally (for running the webhook-registration script).
 
 ---
 
@@ -34,31 +33,15 @@ cp .env.example .env
 
 Fill in `.env` with your credentials (see steps below).
 
-### 2. Create the Turso database
+### 2. Provision Neon Postgres from the Vercel Marketplace
 
-Install the Turso CLI, sign up, create the DB, and generate an auth token:
+You do this **after** the first Vercel deploy (step 5), from the Vercel dashboard:
 
-```bash
-# Install CLI (macOS)
-brew install tursodatabase/tap/turso
+1. Go to your Vercel project → **Storage** tab → **Create Database** → **Neon**.
+2. Accept the Marketplace terms. Pick the free plan and default region.
+3. Vercel auto-injects `DATABASE_URL` (and several aliases like `POSTGRES_URL`, `PGHOST`, etc.) into all environments. Nothing else to configure.
 
-# Or (Linux / WSL)
-curl -sSfL https://get.tur.so/install.sh | bash
-
-# Sign up / log in
-turso auth signup    # or: turso auth login
-
-# Create the database
-turso db create crohn-tracker
-
-# Get the URL (libsql://...)
-turso db show crohn-tracker --url
-
-# Mint a long-lived auth token
-turso db tokens create crohn-tracker
-```
-
-Put the resulting URL and token into `.env` as `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
+For local `.env`, copy the `DATABASE_URL` value from **Settings → Environment Variables**.
 
 No manual migrations needed — the bot runs `CREATE TABLE IF NOT EXISTS …` on every request.
 
@@ -94,9 +77,8 @@ git push -u origin main
   - `OPENAI_API_KEY`
   - `WEBHOOK_SECRET`
   - `VERCEL_URL` — the deployed domain (no `https://`), e.g. `food-abc123.vercel.app`
-  - `TURSO_DATABASE_URL`
-  - `TURSO_AUTH_TOKEN`
   - `CRON_SECRET`
+  - (`DATABASE_URL` is auto-injected by the Neon Marketplace integration — don't set manually.)
 - Redeploy to pick up the env vars (Deployments → … → Redeploy).
 
 ### 6. Register the webhook with Telegram
@@ -129,7 +111,7 @@ The nightly summary runs automatically at **22:00 UTC** via Vercel Cron.
 ```
 Telegram → POST /api/webhook  ── httpx ──► Telegram API
                 │
-                ├─► lib/database.py  ── libSQL ──► Turso
+                ├─► lib/database.py  ── psycopg ──► Neon Postgres
                 ├─► lib/openai_vision.py  ── GPT-4o (vision) ──► analysis JSON
                 └─► lib/openai_nutrition.py  ── GPT-4o ──► summary / recipe
 
@@ -189,7 +171,7 @@ Food/
 |---|---|
 | Webhook registered but no replies | Check `VERCEL_URL` has no `https://`, redeploy, re-run `set_webhook.py`. Check Vercel → Logs. |
 | `403` from webhook | `WEBHOOK_SECRET` in Vercel env doesn't match the one used by `set_webhook.py`. |
-| `libsql_experimental` not installed | Confirm `requirements.txt` is in the repo root; Vercel installs from it on build. |
+| `psycopg` not installed / DB connection error | Confirm `requirements.txt` is in the repo root and `DATABASE_URL` is present in the Vercel env (it's auto-injected by the Neon integration). |
 | Photo analysis times out | Hobby plan has a 60s function timeout; GPT-4o usually returns in 10-20s. Try a smaller photo. |
 | Cron didn't fire | Crons require a Production deployment. Promote your deploy, or GET the cron URL manually with `Authorization: Bearer $CRON_SECRET`. |
 | `/history_detail` returns empty | It needs the `YYYY-MM-DD` UTC date. Use `/today` first to confirm meals are logged. |
@@ -198,11 +180,11 @@ Food/
 
 ## Deployment checklist
 
-- [ ] `.env` filled in locally
-- [ ] Turso DB created + token minted
 - [ ] GitHub repo pushed
-- [ ] Vercel project imported
-- [ ] All 7 env vars set in Vercel
+- [ ] Vercel project imported + first deploy succeeded
+- [ ] Neon database provisioned via Vercel → Storage (auto-injects `DATABASE_URL`)
+- [ ] App env vars set in Vercel: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `WEBHOOK_SECRET`, `VERCEL_URL`, `CRON_SECRET`
+- [ ] `.env` filled in locally (for `set_webhook.py`)
 - [ ] Deployment promoted to production (so crons run)
 - [ ] `python scripts/set_webhook.py` succeeded
 - [ ] `/start` in Telegram replies with welcome message

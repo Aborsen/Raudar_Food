@@ -1,19 +1,16 @@
-"""Turso (libSQL) database layer: connection, schema migration, and CRUD helpers."""
+"""Postgres (Neon) database layer: connection, schema migration, and CRUD helpers."""
 import json
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Optional
 
-import libsql_experimental as libsql
+import psycopg
 
-from lib.config import TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
+from lib.config import DATABASE_URL
 
 
 def get_conn():
-    """Return a fresh libsql connection. Call per invocation (serverless)."""
-    return libsql.connect(
-        database=TURSO_DATABASE_URL,
-        auth_token=TURSO_AUTH_TOKEN,
-    )
+    """Return a fresh psycopg3 connection. Call per invocation (serverless)."""
+    return psycopg.connect(DATABASE_URL, autocommit=False)
 
 
 def _now_iso() -> str:
@@ -31,72 +28,68 @@ def init_db(conn=None) -> None:
         conn = get_conn()
         close_after = True
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            created_at TEXT
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS daily_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            date TEXT,
-            total_calories REAL DEFAULT 0,
-            total_protein_g REAL DEFAULT 0,
-            total_carbs_g REAL DEFAULT 0,
-            total_fat_g REAL DEFAULT 0,
-            total_fiber_g REAL DEFAULT 0,
-            total_sugar_g REAL DEFAULT 0,
-            summary_sent INTEGER DEFAULT 0,
-            created_at TEXT,
-            UNIQUE(user_id, date)
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS meals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            date TEXT,
-            meal_type TEXT,
-            description TEXT,
-            ingredients TEXT,
-            allergen_warnings TEXT,
-            crohn_warnings TEXT,
-            calories REAL,
-            protein_g REAL,
-            carbs_g REAL,
-            fat_g REAL,
-            fiber_g REAL,
-            sugar_g REAL,
-            photo_file_id TEXT,
-            ai_raw_response TEXT,
-            created_at TEXT
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS daily_recommendations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            date TEXT,
-            recommendation TEXT,
-            created_at TEXT
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pending_photos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            photo_file_id TEXT,
-            created_at TEXT
-        )
-    """)
-
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                created_at TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS daily_logs (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT,
+                date TEXT,
+                total_calories DOUBLE PRECISION DEFAULT 0,
+                total_protein_g DOUBLE PRECISION DEFAULT 0,
+                total_carbs_g DOUBLE PRECISION DEFAULT 0,
+                total_fat_g DOUBLE PRECISION DEFAULT 0,
+                total_fiber_g DOUBLE PRECISION DEFAULT 0,
+                total_sugar_g DOUBLE PRECISION DEFAULT 0,
+                summary_sent INTEGER DEFAULT 0,
+                created_at TEXT,
+                UNIQUE(user_id, date)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS meals (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT,
+                date TEXT,
+                meal_type TEXT,
+                description TEXT,
+                ingredients TEXT,
+                allergen_warnings TEXT,
+                crohn_warnings TEXT,
+                calories DOUBLE PRECISION,
+                protein_g DOUBLE PRECISION,
+                carbs_g DOUBLE PRECISION,
+                fat_g DOUBLE PRECISION,
+                fiber_g DOUBLE PRECISION,
+                sugar_g DOUBLE PRECISION,
+                photo_file_id TEXT,
+                ai_raw_response TEXT,
+                created_at TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS daily_recommendations (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT,
+                date TEXT,
+                recommendation TEXT,
+                created_at TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pending_photos (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT,
+                photo_file_id TEXT,
+                created_at TEXT
+            )
+        """)
     conn.commit()
     if close_after:
         try:
@@ -108,47 +101,47 @@ def init_db(conn=None) -> None:
 # ---------- Users ----------
 
 def upsert_user(conn, user_id: int, username: Optional[str]) -> None:
-    conn.execute(
-        "INSERT OR IGNORE INTO users (user_id, username, created_at) VALUES (?, ?, ?)",
-        (user_id, username or "", _now_iso()),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO users (user_id, username, created_at) VALUES (%s, %s, %s) "
+            "ON CONFLICT (user_id) DO NOTHING",
+            (user_id, username or "", _now_iso()),
+        )
     conn.commit()
 
 
 # ---------- Pending photos ----------
 
 def save_pending_photo(conn, user_id: int, photo_file_id: str) -> None:
-    # Clear any previous pending for this user, then insert fresh
-    conn.execute("DELETE FROM pending_photos WHERE user_id = ?", (user_id,))
-    conn.execute(
-        "INSERT INTO pending_photos (user_id, photo_file_id, created_at) VALUES (?, ?, ?)",
-        (user_id, photo_file_id, _now_iso()),
-    )
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM pending_photos WHERE user_id = %s", (user_id,))
+        cur.execute(
+            "INSERT INTO pending_photos (user_id, photo_file_id, created_at) VALUES (%s, %s, %s)",
+            (user_id, photo_file_id, _now_iso()),
+        )
     conn.commit()
 
 
 def pop_pending_photo(conn, user_id: int) -> Optional[str]:
     """Return the most recent pending photo_file_id and delete all pending for user."""
-    row = conn.execute(
-        "SELECT photo_file_id FROM pending_photos WHERE user_id = ? ORDER BY id DESC LIMIT 1",
-        (user_id,),
-    ).fetchone()
-    if not row:
-        return None
-    file_id = row[0]
-    conn.execute("DELETE FROM pending_photos WHERE user_id = ?", (user_id,))
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT photo_file_id FROM pending_photos WHERE user_id = %s ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        file_id = row[0]
+        cur.execute("DELETE FROM pending_photos WHERE user_id = %s", (user_id,))
     conn.commit()
     return file_id
 
 
 def cleanup_stale_pending(conn, minutes: int = 10) -> None:
-    """Delete pending_photos older than N minutes."""
-    cutoff_iso = datetime.now(timezone.utc).isoformat()
-    # Compare as ISO strings — sort lexicographically for UTC ISO timestamps
-    # Compute cutoff manually
-    from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
-    conn.execute("DELETE FROM pending_photos WHERE created_at < ?", (cutoff,))
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM pending_photos WHERE created_at < %s", (cutoff,))
     conn.commit()
 
 
@@ -163,42 +156,45 @@ def save_meal(
     raw_response: str,
 ) -> None:
     nutrition = analysis.get("nutrition", {}) or {}
-    conn.execute(
-        """INSERT INTO meals (
-            user_id, date, meal_type, description, ingredients,
-            allergen_warnings, crohn_warnings,
-            calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g,
-            photo_file_id, ai_raw_response, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            user_id,
-            _today_str(),
-            meal_type,
-            analysis.get("description") or analysis.get("dish_name", ""),
-            json.dumps(analysis.get("ingredients", [])),
-            json.dumps(analysis.get("allergen_flags", [])),
-            json.dumps(analysis.get("crohn_flags", [])),
-            float(nutrition.get("calories", 0) or 0),
-            float(nutrition.get("protein_g", 0) or 0),
-            float(nutrition.get("carbs_g", 0) or 0),
-            float(nutrition.get("fat_g", 0) or 0),
-            float(nutrition.get("fiber_g", 0) or 0),
-            float(nutrition.get("sugar_g", 0) or 0),
-            photo_file_id,
-            raw_response,
-            _now_iso(),
-        ),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO meals (
+                user_id, date, meal_type, description, ingredients,
+                allergen_warnings, crohn_warnings,
+                calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g,
+                photo_file_id, ai_raw_response, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                user_id,
+                _today_str(),
+                meal_type,
+                analysis.get("description") or analysis.get("dish_name", ""),
+                json.dumps(analysis.get("ingredients", [])),
+                json.dumps(analysis.get("allergen_flags", [])),
+                json.dumps(analysis.get("crohn_flags", [])),
+                float(nutrition.get("calories", 0) or 0),
+                float(nutrition.get("protein_g", 0) or 0),
+                float(nutrition.get("carbs_g", 0) or 0),
+                float(nutrition.get("fat_g", 0) or 0),
+                float(nutrition.get("fiber_g", 0) or 0),
+                float(nutrition.get("sugar_g", 0) or 0),
+                photo_file_id,
+                raw_response,
+                _now_iso(),
+            ),
+        )
     conn.commit()
 
 
 def get_meals_for_day(conn, user_id: int, date: str) -> list[dict]:
-    rows = conn.execute(
-        """SELECT meal_type, description, ingredients, allergen_warnings, crohn_warnings,
-                  calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, created_at
-           FROM meals WHERE user_id = ? AND date = ? ORDER BY id ASC""",
-        (user_id, date),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT meal_type, description, ingredients, allergen_warnings, crohn_warnings,
+                      calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, created_at
+               FROM meals WHERE user_id = %s AND date = %s ORDER BY id ASC""",
+            (user_id, date),
+        )
+        rows = cur.fetchall()
     return [
         {
             "meal_type": r[0],
@@ -231,41 +227,44 @@ def upsert_daily_log_from_meal(conn, user_id: int, analysis: dict) -> None:
     fib = float(nutrition.get("fiber_g", 0) or 0)
     sug = float(nutrition.get("sugar_g", 0) or 0)
 
-    conn.execute(
-        """INSERT INTO daily_logs (user_id, date, total_calories, total_protein_g,
-                                   total_carbs_g, total_fat_g, total_fiber_g, total_sugar_g,
-                                   summary_sent, created_at)
-           VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, ?)
-           ON CONFLICT(user_id, date) DO NOTHING""",
-        (user_id, today, _now_iso()),
-    )
-    conn.execute(
-        """UPDATE daily_logs
-           SET total_calories = total_calories + ?,
-               total_protein_g = total_protein_g + ?,
-               total_carbs_g = total_carbs_g + ?,
-               total_fat_g = total_fat_g + ?,
-               total_fiber_g = total_fiber_g + ?,
-               total_sugar_g = total_sugar_g + ?
-           WHERE user_id = ? AND date = ?""",
-        (cal, p, c, f, fib, sug, user_id, today),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO daily_logs (user_id, date, total_calories, total_protein_g,
+                                       total_carbs_g, total_fat_g, total_fiber_g, total_sugar_g,
+                                       summary_sent, created_at)
+               VALUES (%s, %s, 0, 0, 0, 0, 0, 0, 0, %s)
+               ON CONFLICT (user_id, date) DO NOTHING""",
+            (user_id, today, _now_iso()),
+        )
+        cur.execute(
+            """UPDATE daily_logs
+               SET total_calories = total_calories + %s,
+                   total_protein_g = total_protein_g + %s,
+                   total_carbs_g = total_carbs_g + %s,
+                   total_fat_g = total_fat_g + %s,
+                   total_fiber_g = total_fiber_g + %s,
+                   total_sugar_g = total_sugar_g + %s
+               WHERE user_id = %s AND date = %s""",
+            (cal, p, c, f, fib, sug, user_id, today),
+        )
     conn.commit()
 
 
 def get_today_log(conn, user_id: int) -> dict:
     today = _today_str()
-    row = conn.execute(
-        """SELECT total_calories, total_protein_g, total_carbs_g, total_fat_g,
-                  total_fiber_g, total_sugar_g
-           FROM daily_logs WHERE user_id = ? AND date = ?""",
-        (user_id, today),
-    ).fetchone()
-    meal_count_row = conn.execute(
-        "SELECT COUNT(*) FROM meals WHERE user_id = ? AND date = ?",
-        (user_id, today),
-    ).fetchone()
-    meal_count = meal_count_row[0] if meal_count_row else 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT total_calories, total_protein_g, total_carbs_g, total_fat_g,
+                      total_fiber_g, total_sugar_g
+               FROM daily_logs WHERE user_id = %s AND date = %s""",
+            (user_id, today),
+        )
+        row = cur.fetchone()
+        cur.execute(
+            "SELECT COUNT(*) FROM meals WHERE user_id = %s AND date = %s",
+            (user_id, today),
+        )
+        meal_count = (cur.fetchone() or (0,))[0]
     if not row:
         return {
             "date": today, "calories": 0, "protein": 0, "carbs": 0,
@@ -284,12 +283,14 @@ def get_today_log(conn, user_id: int) -> dict:
 
 
 def get_history(conn, user_id: int, days: int = 7) -> list[dict]:
-    rows = conn.execute(
-        """SELECT date, total_calories, total_protein_g, total_carbs_g, total_fat_g
-           FROM daily_logs WHERE user_id = ?
-           ORDER BY date DESC LIMIT ?""",
-        (user_id, days),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT date, total_calories, total_protein_g, total_carbs_g, total_fat_g
+               FROM daily_logs WHERE user_id = %s
+               ORDER BY date DESC LIMIT %s""",
+            (user_id, days),
+        )
+        rows = cur.fetchall()
     return [
         {
             "date": r[0],
@@ -307,37 +308,42 @@ def get_history(conn, user_id: int, days: int = 7) -> list[dict]:
 def get_users_needing_summary(conn) -> list[tuple[int, str]]:
     """Users with meals today and no summary yet. Returns [(user_id, date)]."""
     today = _today_str()
-    rows = conn.execute(
-        """SELECT DISTINCT dl.user_id, dl.date
-           FROM daily_logs dl
-           WHERE dl.date = ? AND dl.summary_sent = 0
-             AND EXISTS (SELECT 1 FROM meals m WHERE m.user_id = dl.user_id AND m.date = dl.date)""",
-        (today,),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT dl.user_id, dl.date
+               FROM daily_logs dl
+               WHERE dl.date = %s AND dl.summary_sent = 0
+                 AND EXISTS (SELECT 1 FROM meals m WHERE m.user_id = dl.user_id AND m.date = dl.date)""",
+            (today,),
+        )
+        rows = cur.fetchall()
     return [(r[0], r[1]) for r in rows]
 
 
 def save_recommendation(conn, user_id: int, date: str, text: str) -> None:
-    conn.execute(
-        "INSERT INTO daily_recommendations (user_id, date, recommendation, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, date, text, _now_iso()),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO daily_recommendations (user_id, date, recommendation, created_at) "
+            "VALUES (%s, %s, %s, %s)",
+            (user_id, date, text, _now_iso()),
+        )
     conn.commit()
 
 
 def mark_summary_sent(conn, user_id: int, date: str) -> None:
-    conn.execute(
-        "UPDATE daily_logs SET summary_sent = 1 WHERE user_id = ? AND date = ?",
-        (user_id, date),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE daily_logs SET summary_sent = 1 WHERE user_id = %s AND date = %s",
+            (user_id, date),
+        )
     conn.commit()
 
 
 def mark_all_previous_summaries_sent(conn) -> None:
-    """Failsafe midnight call: mark any unsent prior-day summaries as sent."""
     today = _today_str()
-    conn.execute(
-        "UPDATE daily_logs SET summary_sent = 1 WHERE date < ? AND summary_sent = 0",
-        (today,),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE daily_logs SET summary_sent = 1 WHERE date < %s AND summary_sent = 0",
+            (today,),
+        )
     conn.commit()

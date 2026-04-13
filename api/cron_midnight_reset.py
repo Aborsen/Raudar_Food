@@ -50,7 +50,8 @@ def run_midnight_reset() -> dict:
         mark_all_previous_summaries_sent(conn)
         # Clear any stale pending photos (>1 hour)
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-        conn.execute("DELETE FROM pending_photos WHERE created_at < ?", (cutoff,))
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pending_photos WHERE created_at < %s", (cutoff,))
         conn.commit()
     finally:
         try:
