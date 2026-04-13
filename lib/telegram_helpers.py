@@ -63,12 +63,24 @@ def meal_type_keyboard() -> dict:
     return {
         "inline_keyboard": [
             [
-                {"text": "🍳 Breakfast", "callback_data": "meal_type:breakfast"},
-                {"text": "🥗 Lunch", "callback_data": "meal_type:lunch"},
+                {"text": "🍳 Сніданок", "callback_data": "meal_type:breakfast"},
+                {"text": "🥗 Обід", "callback_data": "meal_type:lunch"},
             ],
             [
-                {"text": "🍽️ Dinner", "callback_data": "meal_type:dinner"},
-                {"text": "🍎 Snack", "callback_data": "meal_type:snack"},
+                {"text": "🍽️ Вечеря", "callback_data": "meal_type:dinner"},
+                {"text": "🍎 Перекус", "callback_data": "meal_type:snack"},
             ],
         ]
     }
+
+
+def set_my_commands(commands: list[dict], language_code: str | None = None) -> dict:
+    """Register the bot's native command menu (the blue 'Menu' button)."""
+    payload: dict = {"commands": commands}
+    if language_code:
+        payload["language_code"] = language_code
+    try:
+        resp = httpx.post(f"{BASE_URL}/setMyCommands", json=payload, timeout=10)
+        return resp.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

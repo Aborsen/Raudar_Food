@@ -34,12 +34,21 @@ from lib.telegram_helpers import (
 from lib.openai_vision import analyze_photo
 from lib.openai_nutrition import suggest_meal
 from lib.formatters import (
-    WELCOME_MESSAGE,
-    HELP_MESSAGE,
+    welcome_message,
+    help_message,
     format_today_progress,
     format_history,
     format_day_detail,
     format_meal_logged,
+    PHOTO_PROMPT_MEAL_TYPE,
+    ANALYZING_WAIT,
+    PHOTO_DOWNLOAD_FAILED,
+    PHOTO_ANALYSIS_FAILED,
+    PENDING_EXPIRED,
+    UNKNOWN_COMMAND,
+    SUGGEST_THINKING,
+    SUGGEST_FAILED,
+    HISTORY_USAGE,
 )
 
 
@@ -69,7 +78,6 @@ class handler(BaseHTTPRequestHandler):
         self._respond_ok()
 
     def do_GET(self):
-        # Health check
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -99,6 +107,7 @@ def process_update(update: dict) -> None:
         user = message.get("from", {})
         user_id = user.get("id")
         username = user.get("username") or user.get("first_name")
+        first_name = user.get("first_name")
         if user_id:
             upsert_user(conn, user_id, username)
 
@@ -108,7 +117,7 @@ def process_update(update: dict) -> None:
 
         text = (message.get("text") or "").strip()
         if text.startswith("/"):
-            handle_command(conn, message, text)
+            handle_command(conn, message, text, first_name)
     finally:
         try:
             conn.close()
@@ -122,12 +131,11 @@ def handle_photo(conn, message: dict) -> None:
     chat_id = message["chat"]["id"]
     user_id = message["from"]["id"]
     photos = message["photo"]
-    # Telegram sends multiple sizes; pick the largest (last)
     file_id = photos[-1]["file_id"]
     save_pending_photo(conn, user_id, file_id)
     send_message(
         chat_id,
-        "📸 Got it! What meal is this?",
+        PHOTO_PROMPT_MEAL_TYPE,
         reply_markup=meal_type_keyboard(),
     )
 
@@ -136,72 +144,67 @@ def handle_callback(conn, cb: dict) -> None:
     cb_id = cb["id"]
     data = cb.get("data", "")
     user_id = cb["from"]["id"]
+    first_name = cb["from"].get("first_name")
     message = cb.get("message", {})
     chat_id = message.get("chat", {}).get("id", user_id)
 
     if not data.startswith("meal_type:"):
-        answer_callback_query(cb_id, "Unknown action")
+        answer_callback_query(cb_id, "Невідома дія")
         return
 
     meal_type = data.split(":", 1)[1]
-    answer_callback_query(cb_id, f"Analyzing your {meal_type}…")
+    meal_ua = {"breakfast": "сніданок", "lunch": "обід", "dinner": "вечерю", "snack": "перекус"}.get(
+        meal_type, meal_type
+    )
+    answer_callback_query(cb_id, f"Аналізую твій {meal_ua}…")
 
     file_id = pop_pending_photo(conn, user_id)
     if not file_id:
-        send_message(
-            chat_id,
-            "⏰ I don't have a pending photo for you anymore (expired after 10 min). "
-            "Please send a fresh photo.",
-        )
+        send_message(chat_id, PENDING_EXPIRED)
         return
 
-    send_message(chat_id, "🔍 Analyzing your meal, one moment…")
+    send_message(chat_id, ANALYZING_WAIT)
 
     try:
         image_bytes = get_file_bytes(file_id)
     except Exception as e:
         print("getFile error:", e, flush=True)
-        send_message(chat_id, "Sorry, I couldn't download the photo. Please try again.")
+        send_message(chat_id, PHOTO_DOWNLOAD_FAILED)
         return
 
     try:
         analysis, raw = analyze_photo(image_bytes)
     except Exception as e:
         print("vision error:", e, flush=True)
-        send_message(
-            chat_id,
-            "Sorry, I couldn't analyze this photo. Please try again with a clearer image.",
-        )
+        send_message(chat_id, PHOTO_ANALYSIS_FAILED)
         return
 
-    # Persist
     save_meal(conn, user_id, meal_type, analysis, file_id, raw)
     upsert_daily_log_from_meal(conn, user_id, analysis)
     today_log = get_today_log(conn, user_id)
 
-    send_message(chat_id, format_meal_logged(meal_type, analysis, today_log))
+    send_message(chat_id, format_meal_logged(meal_type, analysis, today_log, first_name))
 
 
-def handle_command(conn, message: dict, text: str) -> None:
+def handle_command(conn, message: dict, text: str, first_name: str | None) -> None:
     chat_id = message["chat"]["id"]
     user_id = message["from"]["id"]
 
-    # Split "/cmd@botname arg1 arg2" → cmd + args
     parts = text.split()
     cmd = parts[0].split("@")[0].lower()
     args = parts[1:]
 
     if cmd == "/start":
-        send_message(chat_id, WELCOME_MESSAGE)
+        send_message(chat_id, welcome_message(first_name))
         return
 
     if cmd == "/help":
-        send_message(chat_id, HELP_MESSAGE)
+        send_message(chat_id, help_message())
         return
 
     if cmd == "/today":
         log = get_today_log(conn, user_id)
-        send_message(chat_id, format_today_progress(log))
+        send_message(chat_id, format_today_progress(log, first_name))
         return
 
     if cmd == "/history":
@@ -211,7 +214,7 @@ def handle_command(conn, message: dict, text: str) -> None:
 
     if cmd == "/history_detail":
         if not args:
-            send_message(chat_id, "Usage: /history_detail YYYY-MM-DD")
+            send_message(chat_id, HISTORY_USAGE)
             return
         date = args[0]
         meals = get_meals_for_day(conn, user_id, date)
@@ -221,14 +224,14 @@ def handle_command(conn, message: dict, text: str) -> None:
     if cmd == "/suggest_meal":
         log = get_today_log(conn, user_id)
         meals = get_meals_for_day(conn, user_id, log["date"])
-        send_message(chat_id, "🧠 Thinking of a meal that fits your day…")
+        send_message(chat_id, SUGGEST_THINKING)
         try:
             recipe = suggest_meal(log, meals)
         except Exception as e:
             print("suggest error:", e, flush=True)
-            send_message(chat_id, "Sorry, I couldn't generate a suggestion right now. Try again shortly.")
+            send_message(chat_id, SUGGEST_FAILED)
             return
         send_message(chat_id, recipe)
         return
 
-    send_message(chat_id, "Unknown command. Try /help.")
+    send_message(chat_id, UNKNOWN_COMMAND)

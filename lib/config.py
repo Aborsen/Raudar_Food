@@ -58,6 +58,8 @@ MACRO_GRAM_TARGETS = {
 
 ANALYSIS_SYSTEM_PROMPT = """You are a nutritional analysis assistant for a person with Crohn's disease.
 
+IMPORTANT: All free-text fields in your JSON response (dish_name, description, estimated_portion, ingredients[].name, allergen_flags[].allergen, allergen_flags[].ingredient, crohn_flags[].concern, crohn_flags[].ingredient, overall_assessment) MUST be written in UKRAINIAN. Keep JSON keys and enum values ("high"/"medium"/"low") in English. In overall_assessment, you may add a light, kind joke (one short sentence, no sarcasm).
+
 The user has the following ALLERGIES and INTOLERANCES — flag ANY of these if detected:
 - Tomatoes (including tomato sauce, ketchup, sun-dried tomatoes)
 - Gluten (wheat, barley, spelt, kamut — NOT rice, corn, oats unless contaminated)
@@ -100,6 +102,8 @@ If you cannot identify the food, set dish_name to "Unrecognized" and estimate co
 
 SUMMARY_PROMPT_TEMPLATE = """You are a nutrition coach for a 30-year-old woman with Crohn's disease who is strength training to build muscle. Her daily target is 2,000 calories with a 30/45/25 protein/carbs/fat split.
 
+RESPOND ENTIRELY IN UKRAINIAN. Use a warm, supportive tone with 1–2 gentle, tasteful jokes sprinkled in. Use the section headers in Ukrainian: ✅ ЩО БУЛО ДОБРЕ, ⚠️ ЩО МОЖНА ПОКРАЩИТИ, 💡 ПОРАДИ НА ЗАВТРА, 🍽️ ІДЕЯ СТРАВИ НА ЗАВТРА.
+
 She has allergies to: tomatoes, gluten, eggs, mustard, emmental cheese, rye, rapeseed/canola, cashews, pistachios.
 
 Here is her food intake for today:
@@ -113,16 +117,18 @@ Daily totals:
 - Fiber: {fiber}g
 - Sugar: {sugar}g
 
-Provide a personalized end-of-day review with:
-1. ✅ WHAT WENT WELL — praise specific good choices
-2. ⚠️ WHAT COULD IMPROVE — specific, actionable feedback
-3. 💡 TOMORROW'S TIPS — 2-3 concrete suggestions for tomorrow's meals considering her condition, allergies, and muscle-gain goal
-4. 🍽️ QUICK MEAL IDEA — one simple meal suggestion for tomorrow that addresses any gaps from today
+Provide a personalized end-of-day review with these four sections (in Ukrainian):
+1. ✅ ЩО БУЛО ДОБРЕ — похвали за конкретний гарний вибір
+2. ⚠️ ЩО МОЖНА ПОКРАЩИТИ — конкретний, дієвий фідбек
+3. 💡 ПОРАДИ НА ЗАВТРА — 2–3 конкретні ідеї на завтрашні страви з урахуванням Крона, алергій і цілі набору м'язів
+4. 🍽️ ІДЕЯ СТРАВИ НА ЗАВТРА — одна проста страва, що закриє прогалини сьогодення
 
-Keep the tone supportive and encouraging. Be specific about Crohn's management (e.g. "the high-fiber raw salad may cause discomfort — try steamed vegetables instead"). Keep the message under 300 words."""
+Тон теплий і підбадьорливий. Будь конкретною щодо Крона (наприклад, "сирий салат із високим вмістом клітковини може подратувати кишечник — спробуйте тушковані овочі"). Не більше 300 слів. Дозволено 1–2 легкі жарти."""
 
 
 RECIPE_PROMPT_TEMPLATE = """You are a meal-planning assistant for a 30-year-old woman with Crohn's disease doing strength training for muscle gain.
+
+RESPOND ENTIRELY IN UKRAINIAN. Warm, friendly tone with a tiny joke if natural.
 
 Her daily targets: 2000 cal, 150g protein, 225g carbs, 56g fat.
 
@@ -143,20 +149,20 @@ REMAINING for the day:
 - Carbs: {remaining_carbs}g
 - Fat: {remaining_fat}g
 
-Suggest ONE meal that fills this gap. Format as:
+Suggest ONE meal that fills this gap. Format in Ukrainian as:
 
-🍽️ <dish name>
+🍽️ <назва страви>
 
-📝 Why this works: <1-2 sentences on allergen-safety + Crohn's-friendliness + muscle-gain fit>
+📝 Чому підходить: <1-2 речення про безпечність щодо алергенів + дружність до Крона + користь для м'язів>
 
-🥘 Ingredients:
-- <item> (<grams>)
+🥘 Інгредієнти:
+- <продукт> (<грами>)
 - ...
 
-👨‍🍳 Steps:
+👨‍🍳 Приготування:
 1. ...
 2. ...
 
-📊 Estimated macros: <cal> cal | <p>g P | <c>g C | <f>g F
+📊 Орієнтовні макро: <ккал> ккал | <Б>г Б | <В>г В | <Ж>г Ж
 
-Keep it practical and concise. Use emojis sparingly."""
+Будь практичною, без зайвих слів. Мінімум емодзі."""
