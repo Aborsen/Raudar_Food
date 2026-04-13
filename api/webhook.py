@@ -17,7 +17,8 @@ from lib.database import (
     init_db,
     upsert_user,
     save_pending_photo,
-    pop_pending_photo,
+    save_pending_text,
+    pop_pending_entry,
     cleanup_stale_pending,
     save_meal,
     upsert_daily_log_from_meal,
@@ -31,7 +32,7 @@ from lib.telegram_helpers import (
     get_file_bytes,
     meal_type_keyboard,
 )
-from lib.openai_vision import analyze_photo
+from lib.openai_vision import analyze_photo, analyze_text
 from lib.openai_nutrition import suggest_meal
 from lib.formatters import (
     welcome_message,
@@ -51,10 +52,15 @@ from lib.formatters import (
     HISTORY_USAGE,
 )
 
+TEXT_PROMPT_MEAL_TYPE = "📝 Записав твій опис! Що це за прийом їжі?"
+TEXT_ANALYSIS_FAILED = (
+    "Не зміг нормально розпарсити опис. Спробуй написати простіше — "
+    "наприклад: «курка 200г, рис 150г, броколі 100г». 🙂"
+)
+
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # Verify webhook secret
         secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
             self.send_response(403)
@@ -72,7 +78,6 @@ class handler(BaseHTTPRequestHandler):
         try:
             process_update(update)
         except Exception:
-            # Log but always return 200 so Telegram doesn't retry-loop us
             print("webhook error:", traceback.format_exc(), flush=True)
 
         self._respond_ok()
@@ -116,8 +121,15 @@ def process_update(update: dict) -> None:
             return
 
         text = (message.get("text") or "").strip()
+        if not text:
+            return
+
         if text.startswith("/"):
             handle_command(conn, message, text, first_name)
+            return
+
+        # Free-text entry: treat as a meal description
+        handle_text_entry(conn, message, text)
     finally:
         try:
             conn.close()
@@ -133,11 +145,14 @@ def handle_photo(conn, message: dict) -> None:
     photos = message["photo"]
     file_id = photos[-1]["file_id"]
     save_pending_photo(conn, user_id, file_id)
-    send_message(
-        chat_id,
-        PHOTO_PROMPT_MEAL_TYPE,
-        reply_markup=meal_type_keyboard(),
-    )
+    send_message(chat_id, PHOTO_PROMPT_MEAL_TYPE, reply_markup=meal_type_keyboard())
+
+
+def handle_text_entry(conn, message: dict, text: str) -> None:
+    chat_id = message["chat"]["id"]
+    user_id = message["from"]["id"]
+    save_pending_text(conn, user_id, text)
+    send_message(chat_id, TEXT_PROMPT_MEAL_TYPE, reply_markup=meal_type_keyboard())
 
 
 def handle_callback(conn, cb: dict) -> None:
@@ -158,28 +173,38 @@ def handle_callback(conn, cb: dict) -> None:
     )
     answer_callback_query(cb_id, f"Аналізую твій {meal_ua}…")
 
-    file_id = pop_pending_photo(conn, user_id)
-    if not file_id:
+    entry = pop_pending_entry(conn, user_id)
+    if entry is None:
         send_message(chat_id, PENDING_EXPIRED)
         return
+    file_id, text_description = entry
 
     send_message(chat_id, ANALYZING_WAIT)
 
+    analysis = None
+    raw = ""
     try:
-        image_bytes = get_file_bytes(file_id)
+        if file_id:
+            try:
+                image_bytes = get_file_bytes(file_id)
+            except Exception as e:
+                print("getFile error:", e, flush=True)
+                send_message(chat_id, PHOTO_DOWNLOAD_FAILED)
+                return
+            analysis, raw = analyze_photo(image_bytes)
+        elif text_description:
+            analysis, raw = analyze_text(text_description)
+        else:
+            send_message(chat_id, PENDING_EXPIRED)
+            return
     except Exception as e:
-        print("getFile error:", e, flush=True)
-        send_message(chat_id, PHOTO_DOWNLOAD_FAILED)
+        print("analysis error:", e, flush=True)
+        fail_msg = TEXT_ANALYSIS_FAILED if text_description else PHOTO_ANALYSIS_FAILED
+        send_message(chat_id, fail_msg)
         return
 
-    try:
-        analysis, raw = analyze_photo(image_bytes)
-    except Exception as e:
-        print("vision error:", e, flush=True)
-        send_message(chat_id, PHOTO_ANALYSIS_FAILED)
-        return
-
-    save_meal(conn, user_id, meal_type, analysis, file_id, raw)
+    # Persist. For text-origin meals we store an empty file_id.
+    save_meal(conn, user_id, meal_type, analysis, file_id or "", raw)
     upsert_daily_log_from_meal(conn, user_id, analysis)
     today_log = get_today_log(conn, user_id)
 

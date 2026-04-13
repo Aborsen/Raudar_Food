@@ -90,6 +90,11 @@ def init_db(conn=None) -> None:
                 created_at TEXT
             )
         """)
+        # Migration: text-entry support. Add optional text_description column.
+        cur.execute("""
+            ALTER TABLE pending_photos
+            ADD COLUMN IF NOT EXISTS text_description TEXT
+        """)
     conn.commit()
     if close_after:
         try:
@@ -116,26 +121,51 @@ def save_pending_photo(conn, user_id: int, photo_file_id: str) -> None:
     with conn.cursor() as cur:
         cur.execute("DELETE FROM pending_photos WHERE user_id = %s", (user_id,))
         cur.execute(
-            "INSERT INTO pending_photos (user_id, photo_file_id, created_at) VALUES (%s, %s, %s)",
+            "INSERT INTO pending_photos (user_id, photo_file_id, text_description, created_at) "
+            "VALUES (%s, %s, NULL, %s)",
             (user_id, photo_file_id, _now_iso()),
         )
     conn.commit()
 
 
-def pop_pending_photo(conn, user_id: int) -> Optional[str]:
-    """Return the most recent pending photo_file_id and delete all pending for user."""
+def save_pending_text(conn, user_id: int, text_description: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM pending_photos WHERE user_id = %s", (user_id,))
+        cur.execute(
+            "INSERT INTO pending_photos (user_id, photo_file_id, text_description, created_at) "
+            "VALUES (%s, NULL, %s, %s)",
+            (user_id, text_description, _now_iso()),
+        )
+    conn.commit()
+
+
+def pop_pending_entry(conn, user_id: int) -> Optional[tuple[Optional[str], Optional[str]]]:
+    """Return (photo_file_id, text_description) for the most recent pending entry, then delete all.
+
+    Exactly one of the two fields will be non-null.
+    Returns None if nothing is pending.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT photo_file_id FROM pending_photos WHERE user_id = %s ORDER BY id DESC LIMIT 1",
+            "SELECT photo_file_id, text_description FROM pending_photos "
+            "WHERE user_id = %s ORDER BY id DESC LIMIT 1",
             (user_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        file_id = row[0]
+        file_id, text = row[0], row[1]
         cur.execute("DELETE FROM pending_photos WHERE user_id = %s", (user_id,))
     conn.commit()
-    return file_id
+    return (file_id, text)
+
+
+# Backwards-compat alias (not used after the text-entry refactor).
+def pop_pending_photo(conn, user_id: int) -> Optional[str]:
+    result = pop_pending_entry(conn, user_id)
+    if result is None:
+        return None
+    return result[0]
 
 
 def cleanup_stale_pending(conn, minutes: int = 10) -> None:

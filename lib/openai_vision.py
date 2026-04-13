@@ -74,3 +74,48 @@ def analyze_photo(image_bytes: bytes) -> tuple[dict, str]:
     )
     raw2 = resp2.choices[0].message.content or ""
     return json.loads(_strip_fences(raw2)), raw2
+
+
+def analyze_text(description: str) -> tuple[dict, str]:
+    """Analyze a user's free-text description of a meal.
+
+    Returns (parsed_dict, raw_response_text) with the same JSON schema as analyze_photo.
+    """
+    client = _get_client()
+
+    user_prompt = (
+        "Опис страви від користувача: \n"
+        f"{description}\n\n"
+        "Проаналізуй цей опис так, ніби це фото, і поверни ТОЧНО ту саму JSON-структуру. "
+        "Якщо кількість (грами / порція) не вказана, припусти розумну стандартну порцію і вкажи "
+        "її в estimated_portion (наприклад '~300г припущено'). Відповідай лише валідним JSON."
+    )
+
+    messages = [
+        {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        max_tokens=1500,
+        messages=messages,
+    )
+    raw = resp.choices[0].message.content or ""
+    try:
+        return json.loads(_strip_fences(raw)), raw
+    except json.JSONDecodeError:
+        pass
+
+    messages.append({"role": "assistant", "content": raw})
+    messages.append({
+        "role": "user",
+        "content": "Your previous reply was not valid JSON. Reply again with ONLY the JSON object, no markdown, no prose.",
+    })
+    resp2 = client.chat.completions.create(
+        model="gpt-4o",
+        max_tokens=1500,
+        messages=messages,
+    )
+    raw2 = resp2.choices[0].message.content or ""
+    return json.loads(_strip_fences(raw2)), raw2
