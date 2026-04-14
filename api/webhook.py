@@ -71,7 +71,7 @@ from lib.formatters import (
 )
 
 
-NOT_AUTHORIZED = "🔒 Вибач, цей бот працює тільки для авторизованих користувачів."
+NOT_AUTHORIZED = "🔒 Вибач, цей бот працює тільки для авторизованих користувачів. З питань співпраці писати @ogswed"
 
 
 def _is_allowed(user_id: int | None) -> bool:
