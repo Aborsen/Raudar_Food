@@ -16,8 +16,9 @@ from lib.database import get_conn, init_db, mark_all_previous_summaries_sent
 
 
 def _authorized(headers) -> bool:
+    """Verify Vercel Cron bearer token. Fails closed if CRON_SECRET is not set."""
     if not CRON_SECRET:
-        return True
+        return False  # fail closed — refuse to serve when not configured
     auth = headers.get("Authorization", "")
     return auth == f"Bearer {CRON_SECRET}"
 

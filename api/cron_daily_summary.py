@@ -26,9 +26,9 @@ from lib.openai_nutrition import generate_daily_summary
 
 
 def _authorized(headers) -> bool:
-    """Verify Vercel Cron bearer token if CRON_SECRET is configured."""
+    """Verify Vercel Cron bearer token. Fails closed if CRON_SECRET is not set."""
     if not CRON_SECRET:
-        return True  # no secret configured → accept (useful for manual testing)
+        return False  # fail closed — refuse to serve when not configured
     auth = headers.get("Authorization", "")
     return auth == f"Bearer {CRON_SECRET}"
 

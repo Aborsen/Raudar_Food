@@ -1,9 +1,11 @@
-"""Admin stats dashboard — view in browser with bearer token auth."""
+"""Admin stats dashboard — view in browser with HTTP Basic Auth."""
+import base64
+import hmac
+import html
 import json
 import os
 import sys
 import traceback
-import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
@@ -15,63 +17,129 @@ from lib.config import CRON_SECRET
 from lib.database import get_conn, init_db, delete_meal, recalc_daily_log
 
 
+# Security headers applied to every response.
+# CSP allows 'unsafe-inline' because the dashboard uses inline styles/scripts.
+_SECURITY_HEADERS = [
+    ("Strict-Transport-Security", "max-age=63072000; includeSubDomains"),
+    ("X-Frame-Options", "DENY"),
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+    (
+        "Content-Security-Policy",
+        "default-src 'none'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "form-action 'self'; "
+        "base-uri 'none'; "
+        "frame-ancestors 'none'",
+    ),
+]
+
+
 def _authorized(headers) -> bool:
+    """Authenticate via either Bearer token (curl) or HTTP Basic Auth (browser).
+
+    Fails closed when CRON_SECRET is not configured — refuses to serve
+    rather than exposing the dashboard on an unconfigured deployment.
+    Uses constant-time comparison to resist timing attacks.
+    """
     if not CRON_SECRET:
-        return True
+        return False
+
     auth = headers.get("Authorization", "")
-    return auth == f"Bearer {CRON_SECRET}"
+    if not auth:
+        return False
+
+    expected_bearer = f"Bearer {CRON_SECRET}"
+    if hmac.compare_digest(auth, expected_bearer):
+        return True
+
+    # Basic auth: any username, password must match CRON_SECRET.
+    # Accepted so browsers can prompt the user and cache credentials without
+    # putting the token in the URL (which would leak via history/logs/referer).
+    if auth.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth[6:], validate=True).decode("utf-8", errors="replace")
+        except Exception:
+            return False
+        _, _, password = decoded.partition(":")
+        if password and hmac.compare_digest(password, CRON_SECRET):
+            return True
+
+    return False
 
 
-def _token_from_query(path: str) -> str:
-    qs = urllib.parse.parse_qs(urllib.parse.urlparse(path or "").query)
-    return (qs.get("token") or [""])[0]
+def _same_origin(headers) -> bool:
+    """CSRF check: require Origin header to match the request host.
 
-
-def _esc(s) -> str:
-    if not s:
-        return ""
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    Browsers always send Origin on cross-origin POSTs and on same-origin
+    POSTs with fetch/XHR, so an absent Origin on state-changing requests
+    is suspicious and rejected.
+    """
+    origin = headers.get("Origin", "")
+    host = headers.get("Host", "")
+    if not origin or not host:
+        return False
+    # Expected origin is https://<host> (Vercel enforces HTTPS).
+    return origin == f"https://{host}"
 
 
 class handler(BaseHTTPRequestHandler):
+    def _apply_security_headers(self):
+        for name, value in _SECURITY_HEADERS:
+            self.send_header(name, value)
+
+    def _send_unauthorized(self, body: bytes = b"Unauthorized"):
+        self.send_response(401)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("WWW-Authenticate", 'Basic realm="Food Admin", charset="UTF-8"')
+        self._apply_security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        authed = _authorized(self.headers)
-        if not authed:
-            token = _token_from_query(self.path)
-            if CRON_SECRET and token == CRON_SECRET:
-                authed = True
-        if not authed:
-            self.send_response(401)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"Unauthorized. Add ?token=YOUR_CRON_SECRET or Authorization: Bearer header.")
+        if not _authorized(self.headers):
+            self._send_unauthorized(
+                b"Unauthorized. Authenticate via HTTP Basic Auth (any username, "
+                b"password = CRON_SECRET) or Authorization: Bearer <CRON_SECRET>."
+            )
             return
 
         try:
-            html = build_html()
+            body = build_html()
         except Exception:
             print("admin_stats error:", traceback.format_exc(), flush=True)
-            html = f"<pre>Error: {traceback.format_exc()}</pre>"
+            body = "<pre>Error rendering dashboard (see logs)</pre>"
 
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self._apply_security_headers()
         self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
+        self.wfile.write(body.encode("utf-8"))
 
     def do_POST(self):
         """Handle admin actions (delete meal) via AJAX."""
-        # Auth: check token in query string or Authorization header
-        authed = _authorized(self.headers)
-        if not authed:
-            token = _token_from_query(self.path)
-            if CRON_SECRET and token == CRON_SECRET:
-                authed = True
-        if not authed:
-            self._json_response(401, {"ok": False, "error": "unauthorized"})
+        if not _authorized(self.headers):
+            self._send_unauthorized(b'{"ok": false, "error": "unauthorized"}')
+            return
+
+        # CSRF: require same-origin Origin header on state-changing POSTs.
+        if not _same_origin(self.headers):
+            self._json_response(403, {"ok": False, "error": "origin mismatch"})
             return
 
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        # Admin actions send tiny JSON payloads — cap at 8 KB.
+        if length > 8 * 1024:
+            self._json_response(413, {"ok": False, "error": "payload too large"})
+            return
+
+        try:
             body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
         except Exception:
             self._json_response(400, {"ok": False, "error": "bad json"})
@@ -107,8 +175,16 @@ class handler(BaseHTTPRequestHandler):
     def _json_response(self, code: int, data: dict):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self._apply_security_headers()
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
+
+
+def _esc(s) -> str:
+    """HTML-escape including quotes — safe for attribute interpolation."""
+    if s is None:
+        return ""
+    return html.escape(str(s), quote=True)
 
 
 def build_html() -> str:
@@ -157,9 +233,9 @@ def build_html() -> str:
     for r in user_rows:
         uid, uname, joined, meals, last = r
         user_tbody += (
-            f"<tr><td>{uid}</td><td>{_esc(uname)}</td>"
+            f"<tr><td>{_esc(uid)}</td><td>{_esc(uname)}</td>"
             f"<td>{_esc((joined or '')[:19])}</td>"
-            f"<td>{meals}</td><td>{_esc((last or '—')[:19])}</td></tr>\n"
+            f"<td>{_esc(meals)}</td><td>{_esc((last or '—')[:19])}</td></tr>\n"
         )
 
     # Meals table — all history
@@ -167,9 +243,9 @@ def build_html() -> str:
     for r in meal_rows:
         mid, uid, uname, date, mt, desc, cal, p, c, f, fib, sug, ts = r
         meals_tbody += (
-            f"<tr data-mid='{mid}' data-uid='{uid}'>"
+            f'<tr data-mid="{_esc(mid)}" data-uid="{_esc(uid)}">'
             f"<td>{_esc((ts or '')[:16])}</td>"
-            f"<td>{_esc(uname)} <span class='uid'>({uid})</span></td>"
+            f"<td>{_esc(uname)} <span class='uid'>({_esc(uid)})</span></td>"
             f"<td>{_esc(date)}</td>"
             f"<td>{_esc(mt)}</td>"
             f"<td>{_esc((desc or '')[:80])}</td>"
@@ -402,9 +478,10 @@ async function deleteMeal(btn) {{
   btn.disabled = true;
   btn.textContent = '...';
   try {{
-    const url = window.location.pathname + window.location.search;
-    const resp = await fetch(url, {{
+    // Same-origin POST — browser auto-includes Basic Auth credentials.
+    const resp = await fetch(window.location.pathname, {{
       method: 'POST',
+      credentials: 'same-origin',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{ action: 'delete_meal', meal_id: +mid, user_id: +uid }})
     }});
