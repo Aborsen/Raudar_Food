@@ -139,16 +139,27 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        qs = urllib.parse.parse_qs(parsed.query)
-        init_data_values = qs.get("initData") or []
-        init_data = init_data_values[0] if init_data_values else ""
+        # GET always serves the bootstrap page. The bootstrap JS reads the
+        # Telegram initData from the SDK (or URL hash) and POSTs it back to
+        # this endpoint — keeps initData out of URL/logs/history.
+        self._send_html(200, _BOOTSTRAP_HTML)
 
-        # First load: no initData yet. Serve a bootstrap page whose JS grabs
-        # window.Telegram.WebApp.initData and re-navigates with it as a query
-        # parameter. Second load: server renders the dashboard.
-        if not init_data:
-            self._send_html(200, _BOOTSTRAP_HTML)
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        # initData is small — cap at 16 KB
+        if length <= 0 or length > 16 * 1024:
+            self._send_html(400, "<h1>Bad request</h1>")
+            return
+
+        try:
+            raw = self.rfile.read(length).decode("utf-8")
+            form = urllib.parse.parse_qs(raw)
+            init_data = (form.get("initData") or [""])[0]
+        except Exception:
+            self._send_html(400, "<h1>Bad request</h1>")
             return
 
         user = _verify_init_data(init_data)
@@ -179,24 +190,103 @@ _BOOTSTRAP_HTML = """<!DOCTYPE html>
   .spinner { width: 32px; height: 32px; margin: 20px auto; border: 3px solid #16213e;
              border-top-color: #e94560; border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .diag { margin-top: 20px; padding: 12px; background: #16213e; border-radius: 8px;
+          font-family: ui-monospace, Menlo, monospace; font-size: 0.75em;
+          color: #888; text-align: left; word-break: break-all; }
+  .err { color: #e94560; }
+  button { background: #e94560; color: white; border: 0; padding: 10px 18px;
+           border-radius: 8px; font-size: 1em; margin-top: 14px; cursor: pointer; }
 </style>
 </head>
 <body>
-<div class="spinner"></div>
-<p>Завантаження dashboard…</p>
+<div id="loading">
+  <div class="spinner"></div>
+  <p>Завантаження dashboard…</p>
+</div>
+<div id="error" style="display:none"></div>
 <script>
 (function(){
-  var tg = window.Telegram && window.Telegram.WebApp;
-  if (!tg || !tg.initData) {
-    document.body.innerHTML = '<p>Помилка: цю сторінку треба відкривати з Telegram.</p>';
-    return;
+  // Try to get initData from Telegram SDK or from URL hash (Telegram sometimes
+  // drops tgWebAppData in the fragment on Mini App launch).
+  function findInitData() {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    if (tg && tg.initData) return {source: 'sdk', value: tg.initData};
+    if (window.location.hash && window.location.hash.indexOf('tgWebAppData') !== -1) {
+      var hash = window.location.hash.charAt(0) === '#'
+        ? window.location.hash.substring(1)
+        : window.location.hash;
+      try {
+        var params = new URLSearchParams(hash);
+        var raw = params.get('tgWebAppData');
+        if (raw) return {source: 'hash', value: raw};
+      } catch(e) {}
+    }
+    return null;
   }
-  tg.ready();
-  tg.expand && tg.expand();
-  // Re-navigate with initData as a query string so the server can verify it.
-  var url = new URL(window.location.href);
-  url.searchParams.set('initData', tg.initData);
-  window.location.replace(url.toString());
+
+  function showError() {
+    document.getElementById('loading').style.display = 'none';
+    var err = document.getElementById('error');
+    var tg = window.Telegram && window.Telegram.WebApp;
+    var hasSDK = !!tg;
+    var hasInitData = !!(tg && tg.initData);
+    var ver = (tg && tg.version) || '(no SDK)';
+    var platform = (tg && tg.platform) || '(unknown)';
+    err.innerHTML =
+      '<h2 class="err">Не вдалося відкрити Dashboard</h2>' +
+      '<p>Схоже, сторінку відкрили не через кнопку Telegram Mini App.</p>' +
+      '<p>Переконайся, що натискаєш саме кнопку <b>📱 Dashboard</b> на клавіатурі бота, а не посилання в тексті.</p>' +
+      '<button onclick="location.reload()">🔄 Спробувати ще раз</button>' +
+      '<div class="diag">' +
+      'has Telegram SDK: ' + hasSDK + '<br>' +
+      'has initData: ' + hasInitData + '<br>' +
+      'SDK version: ' + ver + '<br>' +
+      'platform: ' + platform + '<br>' +
+      'hash present: ' + !!window.location.hash + '<br>' +
+      'user-agent: ' + navigator.userAgent.substring(0, 200) +
+      '</div>';
+    err.style.display = 'block';
+  }
+
+  function proceed(initDataStr) {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    if (tg) {
+      try { tg.ready(); } catch(e) {}
+      try { tg.expand && tg.expand(); } catch(e) {}
+    }
+    // POST initData to avoid putting it in the URL (cleaner, no log/history leak).
+    var body = 'initData=' + encodeURIComponent(initDataStr);
+    fetch(window.location.pathname, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: body,
+      credentials: 'same-origin'
+    }).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function(html) {
+      document.open();
+      document.write(html);
+      document.close();
+    }).catch(function(e) {
+      document.getElementById('loading').style.display = 'none';
+      var err = document.getElementById('error');
+      err.innerHTML = '<h2 class="err">Помилка завантаження</h2><p>' + e.message + '</p>' +
+        '<button onclick="location.reload()">🔄 Спробувати ще раз</button>';
+      err.style.display = 'block';
+    });
+  }
+
+  // Try immediately, then retry up to 2s waiting for the SDK to init (slow clients).
+  var attempts = 0;
+  function tick() {
+    var data = findInitData();
+    if (data) { proceed(data.value); return; }
+    attempts++;
+    if (attempts > 20) { showError(); return; }
+    setTimeout(tick, 100);
+  }
+  tick();
 })();
 </script>
 </body>
