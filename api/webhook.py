@@ -42,6 +42,7 @@ from lib.telegram_helpers import (
     meal_type_keyboard,
     moderation_keyboard,
     meals_list_keyboard,
+    main_menu_keyboard,
 )
 from lib.openai_vision import analyze_photo, analyze_text
 from lib.openai_nutrition import suggest_meal
@@ -75,6 +76,12 @@ from lib.formatters import (
     ASK_PROMPT,
     ASK_THINKING,
     ASK_ERROR,
+    BTN_ASK,
+    BTN_TODAY,
+    BTN_MEALS,
+    BTN_HISTORY,
+    BTN_SUGGEST,
+    MENU_BUTTON_LABELS,
 )
 
 
@@ -188,6 +195,20 @@ def process_update(update: dict) -> None:
 
         text = (message.get("text") or "").strip()
         if not text:
+            return
+
+        # Reply-keyboard button taps arrive as plain text equal to the button's
+        # label. Map them to the corresponding slash command before the /command
+        # check so handling is unified.
+        if text in MENU_BUTTON_LABELS:
+            mapped = {
+                BTN_ASK: "/ask",
+                BTN_TODAY: "/today",
+                BTN_MEALS: "/meals",
+                BTN_HISTORY: "/history",
+                BTN_SUGGEST: "/suggest_meal",
+            }[text]
+            handle_command(conn, message, mapped, first_name)
             return
 
         if text.startswith("/"):
@@ -431,11 +452,11 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
     args = parts[1:]
 
     if cmd == "/start":
-        send_message(chat_id, welcome_message(first_name))
+        send_message(chat_id, welcome_message(first_name), reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/help":
-        send_message(chat_id, help_message())
+        send_message(chat_id, help_message(), reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/today":

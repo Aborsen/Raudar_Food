@@ -381,3 +381,15 @@ HISTORY_USAGE = "Використай так: /history_detail РРРР-ММ-ДД
 ASK_PROMPT = "💬 Що ти хочеш запитати? Напиши у відповіді — і я врахую твою історію харчування на сьогодні."
 ASK_THINKING = "🧠 Думаю над відповіддю…"
 ASK_ERROR = "Щось пішло не так з відповіддю. Спробуй ще раз за хвилину. 🤖"
+
+# --- Reply-keyboard button labels (must match the strings used in main_menu_keyboard) ---
+# When a user taps one of these buttons, Telegram sends its label as a message.
+# webhook.py intercepts these labels and routes them to the corresponding command.
+BTN_ASK = "💬 Запитати AI"
+BTN_TODAY = "📊 Сьогодні"
+BTN_MEALS = "📋 Мої страви"
+BTN_HISTORY = "📅 Історія"
+BTN_SUGGEST = "🍽️ Ідея страви"
+BTN_DASHBOARD = "📱 Dashboard"  # web_app button — doesn't send text
+
+MENU_BUTTON_LABELS = {BTN_ASK, BTN_TODAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST}

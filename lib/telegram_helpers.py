@@ -1,10 +1,16 @@
 """Direct Telegram Bot API calls via httpx (no aiogram — serverless-friendly)."""
 import httpx
 
-from lib.config import TELEGRAM_BOT_TOKEN
+from lib.config import TELEGRAM_BOT_TOKEN, VERCEL_URL
 
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}"
+
+
+def _dashboard_url() -> str:
+    """Absolute HTTPS URL for the miniapp dashboard. Requires VERCEL_URL env var."""
+    host = (VERCEL_URL or "").replace("https://", "").replace("http://", "").rstrip("/")
+    return f"https://{host}/api/dashboard"
 
 
 def send_message(chat_id: int, text: str, reply_markup: dict | None = None) -> dict:
@@ -98,6 +104,27 @@ def meals_list_keyboard(meals: list[dict]) -> dict:
             {"text": f"✏️ Змінити {i}", "callback_data": f"meal_edit:{meal_id}"},
         ])
     return {"inline_keyboard": rows}
+
+
+def main_menu_keyboard() -> dict:
+    """Persistent reply keyboard shown below the input field.
+
+    Each plain-text button sends its label as a message when tapped; webhook.py
+    intercepts the labels and routes them to the right command. The Dashboard
+    button uses `web_app` so it opens the miniapp URL inside Telegram.
+    """
+    from lib.formatters import (
+        BTN_ASK, BTN_TODAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST, BTN_DASHBOARD,
+    )
+    return {
+        "keyboard": [
+            [{"text": BTN_ASK}, {"text": BTN_DASHBOARD, "web_app": {"url": _dashboard_url()}}],
+            [{"text": BTN_TODAY}, {"text": BTN_MEALS}],
+            [{"text": BTN_HISTORY}, {"text": BTN_SUGGEST}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
 
 
 def set_my_commands(commands: list[dict], language_code: str | None = None) -> dict:
