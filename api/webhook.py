@@ -471,7 +471,7 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
 
     if cmd == "/today":
         log = get_today_log(conn, user_id)
-        send_message(chat_id, format_today_progress(log, first_name))
+        send_message(chat_id, format_today_progress(log, first_name), reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/meals":
@@ -485,7 +485,7 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
 
     if cmd == "/history":
         rows = get_history(conn, user_id, days=7)
-        send_message(chat_id, format_history(rows))
+        send_message(chat_id, format_history(rows), reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/history_detail":
@@ -505,9 +505,9 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
             recipe = suggest_meal(log, meals)
         except Exception as e:
             print("suggest error:", e, flush=True)
-            send_message(chat_id, SUGGEST_FAILED)
+            send_message(chat_id, SUGGEST_FAILED, reply_markup=main_menu_keyboard())
             return
-        send_message(chat_id, recipe)
+        send_message(chat_id, recipe, reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/ask":
@@ -539,10 +539,13 @@ def handle_ask(conn, user_id: int, chat_id: int, question: str) -> None:
         answer = ask_chat(question, history, today_log, today_meals)
     except Exception as e:
         print("ask_chat error:", traceback.format_exc(), flush=True)
-        send_message(chat_id, ASK_ERROR)
+        # Re-attach main menu so the keyboard isn't lost after force_reply
+        send_message(chat_id, ASK_ERROR, reply_markup=main_menu_keyboard())
         return
 
     # Only persist after a successful answer — failed turns stay out of history
     append_chat_message(conn, user_id, "user", question)
     append_chat_message(conn, user_id, "assistant", answer)
-    send_message(chat_id, answer)
+    # Re-attach the main menu keyboard — force_reply on the prompt removes it
+    # from the UI, so without this the buttons disappear after the answer.
+    send_message(chat_id, answer, reply_markup=main_menu_keyboard())
