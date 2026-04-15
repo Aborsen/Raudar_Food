@@ -25,6 +25,7 @@ except ImportError:
 COMMANDS_UA = [
     {"command": "ask", "description": "💬 Запитати AI про їжу, рецепти, покупки"},
     {"command": "today", "description": "📊 Прогрес за сьогодні"},
+    {"command": "yesterday", "description": "📆 Вчорашній день"},
     {"command": "meals", "description": "📋 Список страв (видалити / змінити)"},
     {"command": "history", "description": "📅 Останні 7 днів"},
     {"command": "history_detail", "description": "🔎 Страви за конкретний день (YYYY-MM-DD)"},
@@ -35,6 +36,7 @@ COMMANDS_UA = [
 COMMANDS_EN = [
     {"command": "ask", "description": "Ask AI about food, recipes, groceries"},
     {"command": "today", "description": "Today's progress"},
+    {"command": "yesterday", "description": "Yesterday's summary"},
     {"command": "meals", "description": "Manage today's meals (delete / edit)"},
     {"command": "history", "description": "Last 7 days"},
     {"command": "history_detail", "description": "Meals on a specific day (YYYY-MM-DD)"},

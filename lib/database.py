@@ -462,28 +462,28 @@ def upsert_daily_log_from_meal(conn, user_id: int, analysis: dict) -> None:
     conn.commit()
 
 
-def get_today_log(conn, user_id: int) -> dict:
-    today = _today_str()
+def get_log_for_date(conn, user_id: int, date: str) -> dict:
+    """Return the daily log for any date. Same shape as get_today_log."""
     with conn.cursor() as cur:
         cur.execute(
             """SELECT total_calories, total_protein_g, total_carbs_g, total_fat_g,
                       total_fiber_g, total_sugar_g
                FROM daily_logs WHERE user_id = %s AND date = %s""",
-            (user_id, today),
+            (user_id, date),
         )
         row = cur.fetchone()
         cur.execute(
             "SELECT COUNT(*) FROM meals WHERE user_id = %s AND date = %s",
-            (user_id, today),
+            (user_id, date),
         )
         meal_count = (cur.fetchone() or (0,))[0]
     if not row:
         return {
-            "date": today, "calories": 0, "protein": 0, "carbs": 0,
+            "date": date, "calories": 0, "protein": 0, "carbs": 0,
             "fat": 0, "fiber": 0, "sugar": 0, "meal_count": meal_count,
         }
     return {
-        "date": today,
+        "date": date,
         "calories": row[0] or 0,
         "protein": row[1] or 0,
         "carbs": row[2] or 0,
@@ -492,6 +492,10 @@ def get_today_log(conn, user_id: int) -> dict:
         "sugar": row[5] or 0,
         "meal_count": meal_count,
     }
+
+
+def get_today_log(conn, user_id: int) -> dict:
+    return get_log_for_date(conn, user_id, _today_str())
 
 
 def get_history(conn, user_id: int, days: int = 7) -> list[dict]:

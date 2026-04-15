@@ -34,6 +34,7 @@ from lib.database import (
     get_chat_history,
     append_chat_message,
     cleanup_stale_chat,
+    get_log_for_date,
 )
 from lib.telegram_helpers import (
     send_message,
@@ -53,6 +54,7 @@ from lib.formatters import (
     welcome_message,
     help_message,
     format_today_progress,
+    format_yesterday,
     format_history,
     format_day_detail,
     format_meal_logged,
@@ -80,6 +82,7 @@ from lib.formatters import (
     ASK_ERROR,
     BTN_ASK,
     BTN_TODAY,
+    BTN_YESTERDAY,
     BTN_MEALS,
     BTN_HISTORY,
     BTN_SUGGEST,
@@ -215,6 +218,7 @@ def process_update(update: dict) -> None:
             mapped = {
                 BTN_ASK: "/ask",
                 BTN_TODAY: "/today",
+                BTN_YESTERDAY: "/yesterday",
                 BTN_MEALS: "/meals",
                 BTN_HISTORY: "/history",
                 BTN_SUGGEST: "/suggest_meal",
@@ -479,6 +483,14 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
     if cmd == "/today":
         log = get_today_log(conn, user_id)
         send_message(chat_id, format_today_progress(log, first_name), reply_markup=main_menu_keyboard())
+        return
+
+    if cmd == "/yesterday":
+        from datetime import datetime, timedelta, timezone
+        y = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        log = get_log_for_date(conn, user_id, y)
+        meals = get_meals_for_day(conn, user_id, y)
+        send_message(chat_id, format_yesterday(log, meals, first_name), reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/meals":

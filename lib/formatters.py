@@ -285,6 +285,57 @@ def format_today_progress(log: dict, first_name: str | None = None) -> str:
     )
 
 
+def format_yesterday(log: dict, meals: list[dict], first_name: str | None = None) -> str:
+    """Yesterday's progress + meal list in one message."""
+    date_str = log.get("date", "")
+    try:
+        date_display = _ua_date_long(datetime.strptime(date_str, "%Y-%m-%d"))
+    except Exception:
+        date_display = date_str
+
+    cal = log.get("calories", 0)
+    p = log.get("protein", 0)
+    c = log.get("carbs", 0)
+    f = log.get("fat", 0)
+    fib = log.get("fiber", 0)
+    sug = log.get("sugar", 0)
+    meal_count = log.get("meal_count", 0)
+    name = _name_or_default(first_name)
+
+    if meal_count == 0:
+        return (
+            f"📆 <b>Вчора ({date_display})</b>\n"
+            f"Нічого не було записано. Тиша в холодильнику. 🤫"
+        )
+
+    meal_lines = []
+    for m in meals:
+        mt_raw = (m.get("meal_type") or "").lower()
+        mt = _MEAL_TYPE_UA.get(mt_raw, mt_raw.capitalize() or "—")
+        desc = (m.get("description") or "")[:60]
+        meal_lines.append(f"• {mt}: {desc} ({round(m.get('calories', 0))} ккал)")
+    meal_section = "\n".join(meal_lines)
+
+    return (
+        f"📆 <b>Вчора ({date_display})</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 {name}\n"
+        f"🔥 Калорії:  {round(cal)} / {DAILY_CAL_TARGET} ({_pct(cal, DAILY_CAL_TARGET)}%)\n"
+        f"   {_bar(cal, DAILY_CAL_TARGET)}\n"
+        f"🥩 Білки:    {round(p)}г / {MACRO_GRAM_TARGETS['protein']}г\n"
+        f"   {_bar(p, MACRO_GRAM_TARGETS['protein'])}\n"
+        f"🍚 Вуглеводи:{round(c)}г / {MACRO_GRAM_TARGETS['carbs']}г\n"
+        f"   {_bar(c, MACRO_GRAM_TARGETS['carbs'])}\n"
+        f"🧈 Жири:     {round(f)}г / {MACRO_GRAM_TARGETS['fat']}г\n"
+        f"   {_bar(f, MACRO_GRAM_TARGETS['fat'])}\n"
+        f"📈 Клітковина: {round(fib)}г\n"
+        f"🍬 Цукор:      {round(sug)}г\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Страви ({meal_count}):</b>\n"
+        f"{meal_section}"
+    )
+
+
 def format_history(rows: list[dict]) -> str:
     if not rows:
         return (
@@ -387,9 +438,12 @@ ASK_ERROR = "Щось пішло не так з відповіддю. Спроб
 # webhook.py intercepts these labels and routes them to the corresponding command.
 BTN_ASK = "💬 Запитати AI"
 BTN_TODAY = "📊 Сьогодні"
+BTN_YESTERDAY = "📆 Вчора"
 BTN_MEALS = "📋 Мої страви"
 BTN_HISTORY = "📅 Історія"
 BTN_SUGGEST = "🍽️ Ідея страви"
-BTN_DASHBOARD = "📱 Dashboard"  # web_app button — doesn't send text
+# Kept as a defensive intercept in webhook.py for any cached keyboards that
+# still have this label; removed from the active reply keyboard layout.
+BTN_DASHBOARD = "📱 Dashboard"
 
-MENU_BUTTON_LABELS = {BTN_ASK, BTN_TODAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST}
+MENU_BUTTON_LABELS = {BTN_ASK, BTN_TODAY, BTN_YESTERDAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST}

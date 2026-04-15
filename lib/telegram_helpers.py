@@ -116,11 +116,11 @@ def main_menu_keyboard() -> dict:
     with an inline keyboard whose web_app button gives full initData.
     """
     from lib.formatters import (
-        BTN_ASK, BTN_TODAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST, BTN_DASHBOARD,
+        BTN_ASK, BTN_TODAY, BTN_YESTERDAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST,
     )
     return {
         "keyboard": [
-            [{"text": BTN_ASK}, {"text": BTN_DASHBOARD}],
+            [{"text": BTN_ASK}, {"text": BTN_YESTERDAY}],
             [{"text": BTN_TODAY}, {"text": BTN_MEALS}],
             [{"text": BTN_HISTORY}, {"text": BTN_SUGGEST}],
         ],
