@@ -379,10 +379,12 @@ def _render_meal_list(meals: list[dict], empty_msg: str) -> str:
         allergen_count = len(m.get("allergen_warnings") or [])
         crohn_count = len(m.get("crohn_warnings") or [])
         badges = ""
+        # No allergies for this profile — allergen_count should always be 0;
+        # keep the badge render defensive in case legacy rows exist.
         if allergen_count:
             badges += f"<span class='badge badge-allergen' title='Алергени'>⚠️ {allergen_count}</span>"
         if crohn_count:
-            badges += f"<span class='badge badge-crohn' title='Крон'>🩺 {crohn_count}</span>"
+            badges += f"<span class='badge badge-crohn' title='Нотатки здоров''я'>💡 {crohn_count}</span>"
         out += (
             f"<div class='meal' data-type='{_esc(mt)}' "
             f"data-desc='{_esc(desc.lower())}' "
@@ -412,8 +414,7 @@ def _render_filter_bar(prefix: str, search_placeholder: str) -> str:
         <button class="chip" data-type="snack">🍎 Перекус</button>
       </div>
       <div class="chips" id="{prefix}ToggleChips" style="margin-top: 6px;">
-        <button class="chip toggle" data-flag="allergen">⚠️ Тільки з алергенами</button>
-        <button class="chip toggle-crohn" data-flag="crohn">🩺 Тільки з Крон-прапорами</button>
+        <button class="chip toggle-crohn" data-flag="crohn">💡 Тільки з нотатками здоров'я</button>
       </div>
       <div class="filter-count" id="{prefix}FilterCount"></div>
     </div>"""

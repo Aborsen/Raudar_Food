@@ -92,7 +92,7 @@ def _format_warnings(analysis: dict) -> list[str]:
 
     if crohn_flags:
         lines.append("")
-        lines.append("⚠️ <b>Примітка щодо Крона:</b>")
+        lines.append("💡 <b>Нотатки щодо здоров'я (для кату):</b>")
         for c in crohn_flags:
             icon = _SEVERITY_ICON.get((c.get("severity") or "").lower(), "🟡")
             lines.append(
