@@ -76,6 +76,9 @@ def meal_type_keyboard() -> dict:
                 {"text": "🍽️ Вечеря", "callback_data": "meal_type:dinner"},
                 {"text": "🍎 Перекус", "callback_data": "meal_type:snack"},
             ],
+            [
+                {"text": "❌ Скасувати", "callback_data": "meal_type:cancel"},
+            ],
         ]
     }
 

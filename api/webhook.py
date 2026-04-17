@@ -72,6 +72,7 @@ from lib.formatters import (
     MEAL_DELETED,
     MEAL_EDIT_PROMPT,
     MEAL_NOT_FOUND,
+    MEAL_CANCELLED,
     NO_MEALS_TO_MANAGE,
     UNKNOWN_COMMAND,
     SUGGEST_THINKING,
@@ -302,6 +303,13 @@ def handle_meal_type_callback(conn, cb: dict) -> None:
     chat_id = message.get("chat", {}).get("id", user_id)
 
     meal_type = data.split(":", 1)[1]
+
+    if meal_type == "cancel":
+        pop_pending_entry(conn, user_id)  # discard photo/text
+        answer_callback_query(cb_id, "Скасовано")
+        send_message(chat_id, MEAL_CANCELLED, reply_markup=main_menu_keyboard())
+        return
+
     meal_ua_map = {"breakfast": "сніданок", "lunch": "обід", "dinner": "вечерю", "snack": "перекус"}
     answer_callback_query(cb_id, f"Аналізую твій {meal_ua_map.get(meal_type, meal_type)}…")
 
