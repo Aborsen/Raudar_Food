@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
 from lib.config import (
     ALLOWED_USER_IDS,
     DAILY_CAL_TARGET,
+    DASHBOARD_TOKEN,
     LOCAL_TZ,
     MACRO_GRAM_TARGETS,
     TELEGRAM_BOT_TOKEN,
@@ -37,16 +38,25 @@ from lib.database import (
     get_log_for_date,
     get_meals_for_day,
     get_history,
+    get_water_today,
+    get_water_target,
+    get_water_for_date,
 )
 
 
-# 24-hour max age for initData, per Telegram's recommendation
-INIT_DATA_MAX_AGE = 24 * 60 * 60
+# Menu button reuses cached initData that can be days old — 30-day window is
+# safe for a personal single-user bot where replay risk is negligible.
+INIT_DATA_MAX_AGE = 30 * 24 * 60 * 60
 
 _SECURITY_HEADERS = [
     ("Strict-Transport-Security", "max-age=63072000; includeSubDomains"),
     ("X-Content-Type-Options", "nosniff"),
     ("Referrer-Policy", "no-referrer"),
+    # Telegram's in-app webview aggressively caches mini-app HTML, which causes
+    # stale dashboards when opening via direct link. Force a fresh fetch every time.
+    ("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0"),
+    ("Pragma", "no-cache"),
+    ("Expires", "0"),
     # Miniapps are loaded in Telegram's webview, so frame-ancestors must allow it.
     # Note: we intentionally DO NOT set X-Frame-Options here — Telegram must iframe us.
     (
@@ -141,9 +151,23 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
-        # GET always serves the bootstrap page. The bootstrap JS reads the
-        # Telegram initData from the SDK (or URL hash) and POSTs it back to
-        # this endpoint — keeps initData out of URL/logs/history.
+        # If a valid DASHBOARD_TOKEN is present in the query string, render
+        # the dashboard directly for the single known user (menu button bypass —
+        # Telegram's menu button sometimes doesn't provide signed initData).
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        token = (params.get("t") or [""])[0]
+        if DASHBOARD_TOKEN and token and hmac.compare_digest(token, DASHBOARD_TOKEN):
+            user_id = next(iter(ALLOWED_USER_IDS))
+            user = {"id": user_id, "first_name": "Raudar"}
+            try:
+                body = _render_dashboard(user)
+            except Exception:
+                print("dashboard render error:", traceback.format_exc(), flush=True)
+                body = "<pre>Dashboard error (see logs)</pre>"
+            self._send_html(200, body)
+            return
+        # Default: serve bootstrap page; its JS POSTs initData back for full auth.
         self._send_html(200, _BOOTSTRAP_HTML)
 
     def do_POST(self):
@@ -183,11 +207,11 @@ _BOOTSTRAP_HTML = """<!DOCTYPE html>
 <html lang="uk">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Food Tracker</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  body { margin: 0; padding: 40px 20px; font-family: -apple-system, system-ui, sans-serif;
+  body { margin: 0; padding: max(40px, calc(env(safe-area-inset-top) + 20px)) 20px 20px; font-family: -apple-system, system-ui, sans-serif;
          background: #0f0f1a; color: #e0e0e0; text-align: center; }
   .spinner { width: 32px; height: 32px; margin: 20px auto; border: 3px solid #16213e;
              border-top-color: #e94560; border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -421,6 +445,65 @@ def _render_filter_bar(prefix: str, search_placeholder: str) -> str:
     </div>"""
 
 
+def _water_card(total_ml: int, target_ml: int) -> str:
+    total_l = total_ml / 1000
+    target_l = target_ml / 1000
+    pct = (total_ml / target_ml) if target_ml else 0
+    pct_int = round(pct * 100)
+    width = max(0, min(100, pct_int))
+    pct_label = f"{pct_int}%"
+    return (
+        f'<div class="water-row">'
+        f'<div class="water-label"><span>💧 Вода</span>'
+        f'<b>{total_l:.2f} / {target_l:.1f} л ({pct_label})</b></div>'
+        f'<div class="water-bar"><div class="water-fill" style="width:{width}%"></div></div>'
+        f'</div>'
+    )
+
+
+def _summary_card(cal, p, c, f) -> str:
+    cal_pct = round((cal / DAILY_CAL_TARGET) * 100) if DAILY_CAL_TARGET else 0
+    p_pct = (p / MACRO_GRAM_TARGETS['protein']) if MACRO_GRAM_TARGETS['protein'] else 0
+    c_pct = (c / MACRO_GRAM_TARGETS['carbs']) if MACRO_GRAM_TARGETS['carbs'] else 0
+    f_pct = (f / MACRO_GRAM_TARGETS['fat']) if MACRO_GRAM_TARGETS['fat'] else 0
+
+    if cal == 0:
+        headline = "Ще нічого не записано — додай перший прийом їжі."
+    elif cal_pct < 30:
+        headline = f"Поки {cal_pct}% цілі по калоріях — день тільки набирає обертів."
+    elif cal_pct < 70:
+        headline = f"{cal_pct}% цілі по калоріях — середина дня, тримай курс."
+    elif cal_pct <= 105:
+        headline = f"{cal_pct}% цілі — норма майже виконана 💪"
+    else:
+        headline = f"{cal_pct}% цілі — перевищено норму на {round(cal - DAILY_CAL_TARGET)} ккал."
+
+    bullets = []
+
+    if p_pct < 0.7:
+        bullets.append("🍗 Білків мало — додай яйця, курку, рибу або сир.")
+    elif p_pct >= 1.0:
+        bullets.append("🍗 Білків достатньо — відмінно.")
+
+    if c_pct < 0.5:
+        bullets.append("🍞 Вуглеводів мало — додай крупу, фрукти або хліб.")
+    elif c_pct > 1.2:
+        bullets.append("🍞 Вуглеводів забагато — завтра менше солодкого й хліба.")
+
+    if f_pct < 0.5:
+        bullets.append("🥑 Жирів мало — додай горіхи, олію або авокадо.")
+    elif f_pct > 1.3:
+        bullets.append("🥑 Жирів забагато — завтра менше масла й смаженого.")
+
+    if cal < DAILY_CAL_TARGET * 0.85:
+        bullets.append("🍽️ Додай ще їжі — калорійності для дня замало.")
+    elif cal > DAILY_CAL_TARGET * 1.05:
+        bullets.append("🍽️ Калорії вже з запасом — завтра легший старт.")
+
+    bullets_html = "".join(f'<p class="sum-line">{b}</p>' for b in bullets)
+    return f'<p class="sum-head">{headline}</p>{bullets_html}'
+
+
 def _render_dashboard(user: dict) -> str:
     from datetime import datetime, timedelta
 
@@ -438,6 +521,9 @@ def _render_dashboard(user: dict) -> str:
         yday_meals = get_meals_for_day(conn, user_id, yday_date)
         week = get_history(conn, user_id, days=7)
         month = get_history(conn, user_id, days=30)
+        water_today = get_water_today(conn, user_id)
+        water_target = get_water_target(conn, user_id)
+        water_yday = get_water_for_date(conn, user_id, yday_date)
     finally:
         try:
             conn.close()
@@ -468,16 +554,21 @@ def _render_dashboard(user: dict) -> str:
     day_filter_bar = _render_filter_bar("day", "Пошук (назва, тип…)")
     yday_filter_bar = _render_filter_bar("yesterday", "Пошук (назва, тип…)")
 
+    summary_html = _summary_card(cal, p, c, f)
+    yday_summary_html = _summary_card(y_cal, y_p, y_c, y_f)
+    water_html = _water_card(water_today, water_target)
+    yday_water_html = _water_card(water_yday, water_target)
+
     return f"""<!DOCTYPE html>
 <html lang="uk">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Food Tracker</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   * {{ box-sizing: border-box; }}
-  body {{ margin: 0; padding: 16px; font-family: -apple-system, system-ui, 'Segoe UI', sans-serif;
+  body {{ margin: 0; padding: max(16px, calc(var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px)) + var(--tg-content-safe-area-inset-top, 0px))) 16px 16px; font-family: -apple-system, system-ui, 'Segoe UI', sans-serif;
          background: #0f0f1a; color: #e0e0e0; font-size: 15px; line-height: 1.45; }}
   h1 {{ margin: 0 0 4px; color: #e94560; font-size: 1.4em; }}
   .sub {{ color: #888; font-size: 0.9em; margin-bottom: 18px; }}
@@ -513,6 +604,15 @@ def _render_dashboard(user: dict) -> str:
            margin-left: 4px; vertical-align: middle; font-weight: 500; }}
   .badge-allergen {{ background: #4a1e2a; color: #ff6b7f; }}
   .badge-crohn {{ background: #4a3a1e; color: #ffbb5b; }}
+
+  .sum-head {{ margin: 0 0 10px; font-size: 0.95em; color: #e0e0e0; line-height: 1.5; }}
+  .sum-line {{ margin: 6px 0; font-size: 0.9em; color: #bdbdd0; line-height: 1.5; }}
+  .water-row {{ margin: 4px 0; }}
+  .water-label {{ display: flex; justify-content: space-between; font-size: 0.9em;
+                 color: #bdbdd0; margin-bottom: 6px; }}
+  .water-label b {{ color: #e0e0e0; }}
+  .water-bar {{ height: 8px; background: #0f0f1a; border-radius: 4px; overflow: hidden; }}
+  .water-fill {{ height: 100%; background: linear-gradient(90deg, #3b82f6, #60a5fa); border-radius: 4px; }}
 
   .filter-bar {{ margin-bottom: 12px; }}
   .filter-bar input[type="search"] {{
@@ -581,6 +681,16 @@ def _render_dashboard(user: dict) -> str:
   </div>
 
   <div class="card">
+    <h2>💧 Вода</h2>
+    {water_html}
+  </div>
+
+  <div class="card">
+    <h2>💡 Підсумок дня</h2>
+    {summary_html}
+  </div>
+
+  <div class="card">
     <h2>🍽️ Страви сьогодні</h2>
     {day_filter_bar}
     <div id="dayMealsList">{today_meals_html}</div>
@@ -608,6 +718,16 @@ def _render_dashboard(user: dict) -> str:
       <div class="bar">{_bar(y_f, MACRO_GRAM_TARGETS['fat'])}</div>
     </div>
     <p class="sub" style="margin-top:10px">Страв записано: {y_meal_count}</p>
+  </div>
+
+  <div class="card">
+    <h2>💧 Вода</h2>
+    {yday_water_html}
+  </div>
+
+  <div class="card">
+    <h2>💡 Підсумок дня</h2>
+    {yday_summary_html}
   </div>
 
   <div class="card">

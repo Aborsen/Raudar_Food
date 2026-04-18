@@ -27,9 +27,13 @@ COMMANDS_UA = [
     {"command": "today", "description": "📊 Прогрес за сьогодні"},
     {"command": "yesterday", "description": "📆 Вчорашній день"},
     {"command": "meals", "description": "📋 Список страв (видалити / змінити)"},
+    {"command": "fav", "description": "⭐ Улюблені страви"},
+    {"command": "recent", "description": "🕒 Нещодавні страви (швидко повторити)"},
+    {"command": "water", "description": "💧 Вода — лічильник + ціль"},
     {"command": "history", "description": "📅 Останні 7 днів"},
     {"command": "history_detail", "description": "🔎 Страви за конкретний день (YYYY-MM-DD)"},
     {"command": "suggest_meal", "description": "🍽️ Ідея страви під залишок дня"},
+    {"command": "profile", "description": "⚙️ Профіль та цілі"},
     {"command": "help", "description": "❓ Список команд"},
 ]
 
@@ -38,9 +42,13 @@ COMMANDS_EN = [
     {"command": "today", "description": "Today's progress"},
     {"command": "yesterday", "description": "Yesterday's summary"},
     {"command": "meals", "description": "Manage today's meals (delete / edit)"},
+    {"command": "fav", "description": "Favorite meals"},
+    {"command": "recent", "description": "Recent meals (quick re-log)"},
+    {"command": "water", "description": "Water tracker"},
     {"command": "history", "description": "Last 7 days"},
     {"command": "history_detail", "description": "Meals on a specific day (YYYY-MM-DD)"},
     {"command": "suggest_meal", "description": "AI meal suggestion"},
+    {"command": "profile", "description": "Profile & targets"},
     {"command": "help", "description": "Show commands"},
 ]
 

@@ -1,7 +1,7 @@
 """Direct Telegram Bot API calls via httpx (no aiogram — serverless-friendly)."""
 import httpx
 
-from lib.config import TELEGRAM_BOT_TOKEN, VERCEL_URL
+from lib.config import DASHBOARD_TOKEN, TELEGRAM_BOT_TOKEN, VERCEL_URL
 
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}"
@@ -10,7 +10,10 @@ FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}"
 def _dashboard_url() -> str:
     """Absolute HTTPS URL for the miniapp dashboard. Requires VERCEL_URL env var."""
     host = (VERCEL_URL or "").replace("https://", "").replace("http://", "").rstrip("/")
-    return f"https://{host}/api/dashboard"
+    base = f"https://{host}/api/dashboard"
+    if DASHBOARD_TOKEN:
+        return f"{base}?t={DASHBOARD_TOKEN}"
+    return base
 
 
 def send_message(chat_id: int, text: str, reply_markup: dict | None = None) -> dict:
@@ -40,15 +43,30 @@ def answer_callback_query(callback_query_id: str, text: str | None = None) -> di
         return {"ok": False, "error": str(e)}
 
 
-def edit_message_text(chat_id: int, message_id: int, text: str) -> dict:
+def edit_message_text(chat_id: int, message_id: int, text: str, reply_markup: dict | None = None) -> dict:
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
         "text": text,
         "parse_mode": "HTML",
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     try:
         resp = httpx.post(f"{BASE_URL}/editMessageText", json=payload, timeout=10)
+        return resp.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def edit_message_reply_markup(chat_id: int, message_id: int, reply_markup: dict) -> dict:
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reply_markup": reply_markup,
+    }
+    try:
+        resp = httpx.post(f"{BASE_URL}/editMessageReplyMarkup", json=payload, timeout=10)
         return resp.json()
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -110,25 +128,99 @@ def meals_list_keyboard(meals: list[dict]) -> dict:
 
 
 def main_menu_keyboard() -> dict:
-    """Persistent reply keyboard shown below the input field.
-
-    All buttons are plain-text — tapping sends the label as a message and
-    webhook.py routes it. The Dashboard button intentionally does NOT use
-    KeyboardButton.web_app because that mode does not provide signed initData
-    (Telegram API limitation). Instead, tapping Dashboard makes the bot reply
-    with an inline keyboard whose web_app button gives full initData.
-    """
+    """Persistent reply keyboard shown below the input field."""
     from lib.formatters import (
-        BTN_ASK, BTN_TODAY, BTN_YESTERDAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST,
+        BTN_ASK, BTN_FAV, BTN_WATER, BTN_TODAY, BTN_SUGGEST, BTN_PROFILE,
     )
     return {
         "keyboard": [
-            [{"text": BTN_ASK}, {"text": BTN_YESTERDAY}],
-            [{"text": BTN_TODAY}, {"text": BTN_MEALS}],
-            [{"text": BTN_HISTORY}, {"text": BTN_SUGGEST}],
+            [{"text": BTN_ASK},     {"text": BTN_FAV}],
+            [{"text": BTN_WATER},   {"text": BTN_TODAY}],
+            [{"text": BTN_SUGGEST}, {"text": BTN_PROFILE}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
+    }
+
+
+# --- Favorites + Recent ---
+
+def _truncate(text: str, n: int = 28) -> str:
+    text = (text or "").strip()
+    if len(text) <= n:
+        return text
+    return text[:n - 1] + "…"
+
+
+def recent_meals_keyboard(meals: list[dict], variant: str = "recent") -> dict:
+    """Inline keyboard: one row per meal with re-log + (for favorites) unstar button."""
+    rows = []
+    for m in meals:
+        mid = m["id"]
+        desc = _truncate(m.get("description") or "—", 28)
+        cal = round(m.get("calories") or 0)
+        label = f"🔁 {desc} · {cal} ккал"
+        row = [{"text": label, "callback_data": f"relog:{mid}"}]
+        if variant == "fav":
+            row.append({"text": "✖", "callback_data": f"fav:{mid}:0"})
+        rows.append(row)
+    if not rows:
+        rows.append([{"text": "—", "callback_data": "noop"}])
+    return {"inline_keyboard": rows}
+
+
+def meal_logged_actions_keyboard(meal_id: int, is_fav: bool = False) -> dict:
+    star = ({"text": "✅ В улюблених", "callback_data": f"fav:{meal_id}:0"}
+            if is_fav else
+            {"text": "⭐ В улюблені", "callback_data": f"fav:{meal_id}:1"})
+    return {
+        "inline_keyboard": [
+            [star,
+             {"text": "✏️ Виправити", "callback_data": f"meal_edit:{meal_id}"},
+             {"text": "🗑 Скасувати", "callback_data": f"meal_del:{meal_id}"}],
+        ]
+    }
+
+
+def undo_relog_keyboard(meal_id: int) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": "↩️ Скасувати", "callback_data": f"undo:{meal_id}"}],
+        ]
+    }
+
+
+# --- Water ---
+
+def water_keyboard() -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "+200", "callback_data": "water:add:200"},
+                {"text": "+250", "callback_data": "water:add:250"},
+                {"text": "+300", "callback_data": "water:add:300"},
+                {"text": "+500", "callback_data": "water:add:500"},
+                {"text": "+750", "callback_data": "water:add:750"},
+            ],
+            [
+                {"text": "↩️ Відкотити останнє", "callback_data": "water:undo"},
+                {"text": "🎯 Ціль", "callback_data": "water:goal"},
+            ],
+        ]
+    }
+
+
+def water_goal_keyboard() -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "1.5 л", "callback_data": "water:goal:set:1500"},
+                {"text": "2.0 л", "callback_data": "water:goal:set:2000"},
+                {"text": "2.5 л", "callback_data": "water:goal:set:2500"},
+                {"text": "3.0 л", "callback_data": "water:goal:set:3000"},
+            ],
+            [{"text": "⬅️ Назад", "callback_data": "water:back"}],
+        ]
     }
 
 

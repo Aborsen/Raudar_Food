@@ -35,10 +35,23 @@ from lib.database import (
     append_chat_message,
     cleanup_stale_chat,
     get_log_for_date,
+    toggle_favorite,
+    set_favorite,
+    get_favorites,
+    get_recent_meals,
+    get_meal_by_id,
+    clone_meal_for_today,
+    add_water,
+    remove_last_water_today,
+    get_water_today,
+    get_water_target,
+    set_water_target,
 )
 from lib.telegram_helpers import (
     send_message,
     answer_callback_query,
+    edit_message_text,
+    edit_message_reply_markup,
     get_file_bytes,
     meal_type_keyboard,
     moderation_keyboard,
@@ -46,6 +59,11 @@ from lib.telegram_helpers import (
     main_menu_keyboard,
     dashboard_inline_keyboard,
     set_chat_menu_button,
+    recent_meals_keyboard,
+    meal_logged_actions_keyboard,
+    undo_relog_keyboard,
+    water_keyboard,
+    water_goal_keyboard,
 )
 from lib.openai_vision import analyze_photo, analyze_text
 from lib.openai_nutrition import suggest_meal
@@ -87,8 +105,12 @@ from lib.formatters import (
     BTN_MEALS,
     BTN_HISTORY,
     BTN_SUGGEST,
+    BTN_FAV,
+    BTN_WATER,
+    BTN_PROFILE,
     BTN_DASHBOARD,
     MENU_BUTTON_LABELS,
+    format_water,
 )
 
 
@@ -215,6 +237,10 @@ def process_update(update: dict) -> None:
                 reply_markup=dashboard_inline_keyboard(),
             )
             return
+        if text == BTN_WATER:
+            # Quick-add 250 ml on tap, then show full water card + keyboard.
+            handle_water_quickadd(conn, chat_id, user_id)
+            return
         if text in MENU_BUTTON_LABELS:
             mapped = {
                 BTN_ASK: "/ask",
@@ -223,6 +249,8 @@ def process_update(update: dict) -> None:
                 BTN_MEALS: "/meals",
                 BTN_HISTORY: "/history",
                 BTN_SUGGEST: "/suggest_meal",
+                BTN_FAV: "/fav",
+                BTN_PROFILE: "/profile",
             }[text]
             handle_command(conn, message, mapped, first_name)
             return
@@ -288,6 +316,16 @@ def handle_callback(conn, cb: dict) -> None:
         handle_moderation_callback(conn, cb)
     elif data.startswith("meal_del:") or data.startswith("meal_edit:"):
         handle_meal_manage_callback(conn, cb)
+    elif data.startswith("fav:"):
+        handle_fav_callback(conn, cb)
+    elif data.startswith("relog:"):
+        handle_relog_callback(conn, cb)
+    elif data.startswith("undo:"):
+        handle_undo_callback(conn, cb)
+    elif data.startswith("water:"):
+        handle_water_callback(conn, cb)
+    elif data == "noop":
+        answer_callback_query(cb["id"])
     else:
         answer_callback_query(cb["id"], "Невідома дія")
 
@@ -365,10 +403,14 @@ def handle_moderation_callback(conn, cb: dict) -> None:
             send_message(chat_id, PENDING_EXPIRED)
             return
         analysis = pending["analysis"]
-        save_meal(conn, user_id, pending["meal_type"], analysis, pending["photo_file_id"] or "", pending["raw_response"])
+        new_meal_id = save_meal(conn, user_id, pending["meal_type"], analysis, pending["photo_file_id"] or "", pending["raw_response"])
         upsert_daily_log_from_meal(conn, user_id, analysis)
         today_log = get_today_log(conn, user_id)
-        send_message(chat_id, format_meal_logged(pending["meal_type"], analysis, today_log, first_name))
+        send_message(
+            chat_id,
+            format_meal_logged(pending["meal_type"], analysis, today_log, first_name),
+            reply_markup=meal_logged_actions_keyboard(new_meal_id, is_fav=False),
+        )
 
     elif action == "recalc":
         answer_callback_query(cb_id, "🔄 Перераховую…")
@@ -552,7 +594,265 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
             )
         return
 
+    if cmd == "/fav":
+        favs = get_favorites(conn, user_id, limit=20)
+        if not favs:
+            send_message(
+                chat_id,
+                "⭐ Поки порожньо. Зірочка на будь-якій страві додає її сюди.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+        send_message(
+            chat_id,
+            "⭐ Твої улюблені — натисни 🔁, щоб записати в сьогодні:",
+            reply_markup=recent_meals_keyboard(favs, variant="fav"),
+        )
+        return
+
+    if cmd == "/recent":
+        recent = get_recent_meals(conn, user_id, limit=10)
+        if not recent:
+            send_message(chat_id, "Ще нічого не записано.", reply_markup=main_menu_keyboard())
+            return
+        send_message(
+            chat_id,
+            "🕒 Нещодавні страви — натисни 🔁, щоб повторити:",
+            reply_markup=recent_meals_keyboard(recent, variant="recent"),
+        )
+        return
+
+    if cmd == "/water":
+        total = get_water_today(conn, user_id)
+        target = get_water_target(conn, user_id)
+        send_message(
+            chat_id,
+            format_water(total, target),
+            reply_markup=water_keyboard(),
+        )
+        return
+
+    if cmd == "/profile":
+        from lib.config import USER_PROFILE, DAILY_CAL_TARGET, MACRO_GRAM_TARGETS
+        lines = [
+            "⚙️ <b>Профіль</b>",
+            f"🎯 Ціль: {USER_PROFILE.get('goal', '—')}",
+            f"🔥 Калорії: {DAILY_CAL_TARGET} ккал/день",
+            f"🥩 Білки: {MACRO_GRAM_TARGETS['protein']} г",
+            f"🍞 Вуглеводи: {MACRO_GRAM_TARGETS['carbs']} г",
+            f"🥑 Жири: {MACRO_GRAM_TARGETS['fat']} г",
+            f"💧 Вода: {get_water_target(conn, user_id)} мл/день",
+        ]
+        send_message(chat_id, "\n".join(lines), reply_markup=main_menu_keyboard())
+        return
+
     send_message(chat_id, UNKNOWN_COMMAND)
+
+
+# ---------- Favorites / Recent / Water handlers ----------
+
+MEAL_UA = {"breakfast": "сніданок", "lunch": "обід", "dinner": "вечерю", "snack": "перекус"}
+
+
+def _meal_type_by_hour() -> str:
+    from datetime import datetime
+    from lib.config import LOCAL_TZ
+    h = datetime.now(LOCAL_TZ).hour
+    if 6 <= h < 11:
+        return "breakfast"
+    if 11 <= h < 16:
+        return "lunch"
+    if 16 <= h < 21:
+        return "dinner"
+    return "snack"
+
+
+def handle_fav_callback(conn, cb: dict) -> None:
+    cb_id = cb["id"]
+    data = cb["data"]
+    user_id = cb["from"]["id"]
+    message = cb.get("message", {}) or {}
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+
+    parts = data.split(":")
+    # Format: fav:<meal_id>[:0|1]
+    try:
+        meal_id = int(parts[1])
+    except (IndexError, ValueError):
+        answer_callback_query(cb_id, "Невідома дія")
+        return
+
+    if len(parts) >= 3:
+        want = parts[2] == "1"
+        ok = set_favorite(conn, meal_id, user_id, want)
+        if not ok:
+            answer_callback_query(cb_id, "Не знайшов страву")
+            return
+        new_state = want
+    else:
+        new_state = toggle_favorite(conn, meal_id, user_id)
+        if new_state is None:
+            answer_callback_query(cb_id, "Не знайшов страву")
+            return
+
+    answer_callback_query(cb_id, "⭐ Додано в улюблені" if new_state else "Прибрано")
+
+    if chat_id and message_id:
+        # Update the inline keyboard so the star label reflects the new state.
+        # If it was the "✖" button on the favorites list, reload the list.
+        # Otherwise, replace with a fresh meal_logged_actions_keyboard.
+        try:
+            edit_message_reply_markup(chat_id, message_id,
+                                      meal_logged_actions_keyboard(meal_id, is_fav=new_state))
+        except Exception:
+            pass
+
+
+def handle_relog_callback(conn, cb: dict) -> None:
+    cb_id = cb["id"]
+    data = cb["data"]
+    user_id = cb["from"]["id"]
+    first_name = cb["from"].get("first_name")
+    message = cb.get("message", {}) or {}
+    chat_id = message.get("chat", {}).get("id", user_id)
+
+    try:
+        src_meal_id = int(data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        answer_callback_query(cb_id, "Невідома дія")
+        return
+
+    meal_type = _meal_type_by_hour()
+    new_id = clone_meal_for_today(conn, src_meal_id, user_id, meal_type)
+    if not new_id:
+        answer_callback_query(cb_id, "Не знайшов страву")
+        return
+
+    answer_callback_query(cb_id, f"✅ Записав в {MEAL_UA[meal_type]}")
+
+    src = get_meal_by_id(conn, new_id, user_id) or {}
+    desc = src.get("description") or ""
+    cal = round(src.get("calories") or 0)
+    today_log = get_today_log(conn, user_id)
+    total_cal = round(today_log.get("calories") or 0)
+
+    send_message(
+        chat_id,
+        f"✅ Записав <b>{desc}</b> в {MEAL_UA[meal_type]} (~{cal} ккал)\n"
+        f"Сьогодні: {total_cal} ккал",
+        reply_markup=undo_relog_keyboard(new_id),
+    )
+
+
+def handle_undo_callback(conn, cb: dict) -> None:
+    cb_id = cb["id"]
+    data = cb["data"]
+    user_id = cb["from"]["id"]
+    message = cb.get("message", {}) or {}
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+
+    try:
+        meal_id = int(data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        answer_callback_query(cb_id, "Невідома дія")
+        return
+
+    meal = get_meal_by_id(conn, meal_id, user_id)
+    if not meal:
+        answer_callback_query(cb_id, "Вже скасовано")
+        return
+
+    delete_meal(conn, meal_id, user_id)
+    recalc_daily_log(conn, user_id, meal["date"])
+    answer_callback_query(cb_id, "↩️ Повернув")
+
+    if chat_id and message_id:
+        try:
+            edit_message_text(chat_id, message_id, "↩️ Скасовано — страву видалено.")
+        except Exception:
+            pass
+
+
+def handle_water_quickadd(conn, chat_id: int, user_id: int) -> None:
+    add_water(conn, user_id, 250)
+    total = get_water_today(conn, user_id)
+    target = get_water_target(conn, user_id)
+    send_message(chat_id, format_water(total, target), reply_markup=water_keyboard())
+
+
+def handle_water_callback(conn, cb: dict) -> None:
+    cb_id = cb["id"]
+    data = cb["data"]
+    user_id = cb["from"]["id"]
+    message = cb.get("message", {}) or {}
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "add":
+        try:
+            amount = int(parts[2])
+        except (IndexError, ValueError):
+            answer_callback_query(cb_id, "Невірна кількість")
+            return
+        if amount not in (200, 250, 300, 500, 750):
+            answer_callback_query(cb_id, "Невірна кількість")
+            return
+        add_water(conn, user_id, amount)
+        total = get_water_today(conn, user_id)
+        target = get_water_target(conn, user_id)
+        answer_callback_query(cb_id, f"+{amount} мл")
+        if chat_id and message_id:
+            edit_message_text(chat_id, message_id,
+                              format_water(total, target),
+                              reply_markup=water_keyboard())
+        return
+
+    if action == "undo":
+        new_total = remove_last_water_today(conn, user_id)
+        if new_total is None:
+            answer_callback_query(cb_id, "Нічого відкочувати сьогодні")
+            return
+        target = get_water_target(conn, user_id)
+        answer_callback_query(cb_id, "↩️ Відкотив")
+        if chat_id and message_id:
+            edit_message_text(chat_id, message_id,
+                              format_water(new_total, target),
+                              reply_markup=water_keyboard())
+        return
+
+    if action == "goal":
+        if len(parts) >= 4 and parts[2] == "set":
+            try:
+                new_target = int(parts[3])
+            except ValueError:
+                answer_callback_query(cb_id, "Невірна ціль")
+                return
+            applied = set_water_target(conn, user_id, new_target)
+            total = get_water_today(conn, user_id)
+            answer_callback_query(cb_id, f"🎯 Ціль: {applied} мл")
+            if chat_id and message_id:
+                edit_message_text(chat_id, message_id,
+                                  format_water(total, applied),
+                                  reply_markup=water_keyboard())
+            return
+        # Show the goal picker
+        answer_callback_query(cb_id)
+        if chat_id and message_id:
+            edit_message_reply_markup(chat_id, message_id, water_goal_keyboard())
+        return
+
+    if action == "back":
+        answer_callback_query(cb_id)
+        if chat_id and message_id:
+            edit_message_reply_markup(chat_id, message_id, water_keyboard())
+        return
+
+    answer_callback_query(cb_id, "Невідома дія")
 
 
 # ---------- /ask chat mode ----------

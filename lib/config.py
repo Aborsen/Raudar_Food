@@ -26,6 +26,7 @@ VERCEL_URL = _env("VERCEL_URL")
 # Fall back to POSTGRES_URL (also provided by some integrations) for convenience.
 DATABASE_URL = _env("DATABASE_URL") or _env("POSTGRES_URL")
 CRON_SECRET = _env("CRON_SECRET")
+DASHBOARD_TOKEN = _env("DASHBOARD_TOKEN")
 
 # Telegram user IDs allowed to use this bot. Personal bot — single user.
 ALLOWED_USER_IDS: set[int] = {169742339}  # ogswed
@@ -173,13 +174,13 @@ Daily totals:
 - Fiber: {fiber}g
 - Sugar: {sugar}g
 
-Provide a personalized end-of-day review with these four sections (in Ukrainian):
-1. ✅ ЩО БУЛО ДОБРЕ — похвали за конкретний гарний вибір
-2. ⚠️ ЩО МОЖНА ПОКРАЩИТИ — конкретний, дієвий фідбек. Пріоритет: чи закрив протеїн (>=220г — добре; <200г — проблема). Чи не перебрав калорій.
-3. 💡 ПОРАДИ НА ЗАВТРА — 2–3 конкретні ідеї: де додати протеїн, як краще розкласти вуглеводи навколо тренування (Tue/Thu/Sat — силові).
-4. 🍽️ ІДЕЯ СТРАВИ НА ЗАВТРА — одна проста, калорійна, білкова страва
+Provide a personalized end-of-day review with these four sections (in Ukrainian). Keep each section to 1–2 short sentences — be ruthlessly concise:
+1. ✅ ЩО БУЛО ДОБРЕ — одна конкретна похвала
+2. ⚠️ ЩО МОЖНА ПОКРАЩИТИ — одна головна проблема (пріоритет: протеїн >=220г — добре; <200г — проблема; або перебір калорій)
+3. 💡 ПОРАДИ НА ЗАВТРА — 1–2 конкретні ідеї
+4. 🍽️ ІДЕЯ СТРАВИ НА ЗАВТРА — одна страва, назва + головний інгредієнт
 
-Не більше 300 слів. Дозволено 1 легкий жарт."""
+Не більше 150 слів загалом. Без води."""
 
 
 CHAT_SYSTEM_PROMPT = """You are a practical nutrition + fitness assistant for a 35-year-old man who is an advanced lifter on a slow cut.

@@ -120,6 +120,26 @@ def init_db(conn=None) -> None:
             "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_ts "
             "ON chat_sessions (user_id, created_at)"
         )
+        cur.execute("ALTER TABLE meals ADD COLUMN IF NOT EXISTS is_favorite INTEGER DEFAULT 0")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS water_logs (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                amount_ml INTEGER NOT NULL,
+                logged_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_water_user_logged "
+            "ON water_logs(user_id, logged_at DESC)"
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS water_prefs (
+                user_id BIGINT PRIMARY KEY,
+                target_ml INTEGER NOT NULL DEFAULT 2500,
+                updated_at TEXT
+            )
+        """)
     conn.commit()
     if close_after:
         try:
@@ -325,7 +345,7 @@ def save_meal(
     analysis: dict,
     photo_file_id: str,
     raw_response: str,
-) -> None:
+) -> int:
     nutrition = analysis.get("nutrition", {}) or {}
     with conn.cursor() as cur:
         cur.execute(
@@ -334,7 +354,8 @@ def save_meal(
                 allergen_warnings, crohn_warnings,
                 calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g,
                 photo_file_id, ai_raw_response, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id""",
             (
                 user_id,
                 _today_str(),
@@ -354,7 +375,9 @@ def save_meal(
                 _now_iso(),
             ),
         )
+        meal_id = cur.fetchone()[0]
     conn.commit()
+    return int(meal_id)
 
 
 def get_meals_for_day(conn, user_id: int, date: str) -> list[dict]:
@@ -548,6 +571,32 @@ def save_recommendation(conn, user_id: int, date: str, text: str) -> None:
     conn.commit()
 
 
+def get_latest_recommendation(conn, user_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT date, recommendation FROM daily_recommendations "
+            "WHERE user_id = %s ORDER BY date DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {"date": row[0], "text": row[1]}
+
+
+def get_recommendation_for_date(conn, user_id: int, date: str) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT date, recommendation FROM daily_recommendations "
+            "WHERE user_id = %s AND date = %s ORDER BY id DESC LIMIT 1",
+            (user_id, date),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {"date": row[0], "text": row[1]}
+
+
 def mark_summary_sent(conn, user_id: int, date: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -565,3 +614,233 @@ def mark_all_previous_summaries_sent(conn) -> None:
             (today,),
         )
     conn.commit()
+
+
+# ---------- Favorites + Recent ----------
+
+def toggle_favorite(conn, meal_id: int, user_id: int) -> Optional[bool]:
+    """Flip is_favorite for a meal. Returns new bool state, or None if not owned."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT is_favorite FROM meals WHERE id = %s AND user_id = %s",
+            (meal_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        new_val = 0 if row[0] else 1
+        cur.execute(
+            "UPDATE meals SET is_favorite = %s WHERE id = %s AND user_id = %s",
+            (new_val, meal_id, user_id),
+        )
+    conn.commit()
+    return bool(new_val)
+
+
+def set_favorite(conn, meal_id: int, user_id: int, is_fav: bool) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE meals SET is_favorite = %s WHERE id = %s AND user_id = %s",
+            (1 if is_fav else 0, meal_id, user_id),
+        )
+        ok = cur.rowcount > 0
+    conn.commit()
+    return ok
+
+
+def get_meal_by_id(conn, meal_id: int, user_id: int) -> Optional[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT id, meal_type, description, ingredients, allergen_warnings, crohn_warnings,
+                      calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g,
+                      photo_file_id, ai_raw_response, is_favorite, date, created_at
+               FROM meals WHERE id = %s AND user_id = %s""",
+            (meal_id, user_id),
+        )
+        r = cur.fetchone()
+    if not r:
+        return None
+    return {
+        "id": r[0], "meal_type": r[1], "description": r[2],
+        "ingredients": json.loads(r[3] or "[]"),
+        "allergen_warnings": json.loads(r[4] or "[]"),
+        "crohn_warnings": json.loads(r[5] or "[]"),
+        "calories": r[6] or 0, "protein_g": r[7] or 0, "carbs_g": r[8] or 0,
+        "fat_g": r[9] or 0, "fiber_g": r[10] or 0, "sugar_g": r[11] or 0,
+        "photo_file_id": r[12], "ai_raw_response": r[13],
+        "is_favorite": bool(r[14]), "date": r[15], "created_at": r[16],
+    }
+
+
+def get_recent_meals(conn, user_id: int, limit: int = 10) -> list[dict]:
+    """Up to `limit` most recent meals, deduplicated by lowercased description."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT ON (LOWER(COALESCE(description, '')))
+                      id, meal_type, description, calories, protein_g, carbs_g, fat_g,
+                      is_favorite, created_at
+               FROM meals
+               WHERE user_id = %s AND description IS NOT NULL AND description != ''
+               ORDER BY LOWER(COALESCE(description, '')), created_at DESC""",
+            (user_id,),
+        )
+        rows = cur.fetchall()
+    results = [
+        {
+            "id": r[0], "meal_type": r[1], "description": r[2],
+            "calories": r[3] or 0, "protein_g": r[4] or 0,
+            "carbs_g": r[5] or 0, "fat_g": r[6] or 0,
+            "is_favorite": bool(r[7]), "created_at": r[8],
+        }
+        for r in rows
+    ]
+    results.sort(key=lambda m: m["created_at"] or "", reverse=True)
+    return results[:limit]
+
+
+def get_favorites(conn, user_id: int, limit: int = 20) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT ON (LOWER(COALESCE(description, '')))
+                      id, meal_type, description, calories, protein_g, carbs_g, fat_g,
+                      is_favorite, created_at
+               FROM meals
+               WHERE user_id = %s AND is_favorite = 1
+                 AND description IS NOT NULL AND description != ''
+               ORDER BY LOWER(COALESCE(description, '')), created_at DESC""",
+            (user_id,),
+        )
+        rows = cur.fetchall()
+    results = [
+        {
+            "id": r[0], "meal_type": r[1], "description": r[2],
+            "calories": r[3] or 0, "protein_g": r[4] or 0,
+            "carbs_g": r[5] or 0, "fat_g": r[6] or 0,
+            "is_favorite": True, "created_at": r[8],
+        }
+        for r in rows
+    ]
+    results.sort(key=lambda m: m["created_at"] or "", reverse=True)
+    return results[:limit]
+
+
+def clone_meal_for_today(conn, meal_id: int, user_id: int, meal_type: str) -> Optional[int]:
+    """Copy an existing meal into today with a new meal_type. Returns new id."""
+    src = get_meal_by_id(conn, meal_id, user_id)
+    if not src:
+        return None
+    today = _today_str()
+    now = _now_iso()
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO meals (
+                user_id, date, meal_type, description, ingredients,
+                allergen_warnings, crohn_warnings,
+                calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g,
+                photo_file_id, ai_raw_response, is_favorite, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id""",
+            (
+                user_id, today, meal_type, src["description"],
+                json.dumps(src["ingredients"], ensure_ascii=False),
+                json.dumps(src["allergen_warnings"], ensure_ascii=False),
+                json.dumps(src["crohn_warnings"], ensure_ascii=False),
+                src["calories"], src["protein_g"], src["carbs_g"],
+                src["fat_g"], src["fiber_g"], src["sugar_g"],
+                src["photo_file_id"], src["ai_raw_response"],
+                0, now,
+            ),
+        )
+        new_id = cur.fetchone()[0]
+    conn.commit()
+    recalc_daily_log(conn, user_id, today)
+    return new_id
+
+
+# ---------- Water tracking ----------
+
+WATER_PRESETS = (200, 250, 300, 500, 750)
+WATER_TARGET_DEFAULT = 2500
+WATER_TARGET_MIN = 1500
+WATER_TARGET_MAX = 4000
+
+
+def _clamp_water_target(ml: int) -> int:
+    return max(WATER_TARGET_MIN, min(WATER_TARGET_MAX, int(ml)))
+
+
+def get_water_target(conn, user_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT target_ml FROM water_prefs WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+    return int(row[0]) if row else WATER_TARGET_DEFAULT
+
+
+def set_water_target(conn, user_id: int, target_ml: int) -> int:
+    clamped = _clamp_water_target(target_ml)
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO water_prefs (user_id, target_ml, updated_at)
+               VALUES (%s, %s, %s)
+               ON CONFLICT (user_id) DO UPDATE SET
+                   target_ml = EXCLUDED.target_ml,
+                   updated_at = EXCLUDED.updated_at""",
+            (user_id, clamped, _now_iso()),
+        )
+    conn.commit()
+    return clamped
+
+
+def add_water(conn, user_id: int, amount_ml: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO water_logs (user_id, amount_ml) VALUES (%s, %s)",
+            (user_id, int(amount_ml)),
+        )
+    conn.commit()
+    return get_water_today(conn, user_id)
+
+
+def remove_last_water_today(conn, user_id: int) -> Optional[int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """DELETE FROM water_logs
+               WHERE id = (
+                 SELECT id FROM water_logs
+                 WHERE user_id = %s
+                   AND (logged_at AT TIME ZONE 'Europe/Kyiv')::date
+                       = (now() AT TIME ZONE 'Europe/Kyiv')::date
+                 ORDER BY logged_at DESC LIMIT 1
+               )""",
+            (user_id,),
+        )
+        deleted = cur.rowcount > 0
+    conn.commit()
+    if not deleted:
+        return None
+    return get_water_today(conn, user_id)
+
+
+def get_water_today(conn, user_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT COALESCE(SUM(amount_ml), 0) FROM water_logs
+               WHERE user_id = %s
+                 AND (logged_at AT TIME ZONE 'Europe/Kyiv')::date
+                     = (now() AT TIME ZONE 'Europe/Kyiv')::date""",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    return int(row[0] or 0)
+
+
+def get_water_for_date(conn, user_id: int, date_str: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT COALESCE(SUM(amount_ml), 0) FROM water_logs
+               WHERE user_id = %s
+                 AND (logged_at AT TIME ZONE 'Europe/Kyiv')::date = %s::date""",
+            (user_id, date_str),
+        )
+        row = cur.fetchone()
+    return int(row[0] or 0)

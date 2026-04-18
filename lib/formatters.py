@@ -455,8 +455,26 @@ BTN_YESTERDAY = "📆 Вчора"
 BTN_MEALS = "📋 Мої страви"
 BTN_HISTORY = "📅 Історія"
 BTN_SUGGEST = "🍽️ Ідея страви"
+BTN_FAV = "⭐ Улюблені"
+BTN_WATER = "💧 +250мл"
+BTN_PROFILE = "⚙️ Профіль"
 # Kept as a defensive intercept in webhook.py for any cached keyboards that
 # still have this label; removed from the active reply keyboard layout.
 BTN_DASHBOARD = "📱 Dashboard"
 
-MENU_BUTTON_LABELS = {BTN_ASK, BTN_TODAY, BTN_YESTERDAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST}
+MENU_BUTTON_LABELS = {
+    BTN_ASK, BTN_TODAY, BTN_YESTERDAY, BTN_MEALS, BTN_HISTORY, BTN_SUGGEST,
+    BTN_FAV, BTN_WATER, BTN_PROFILE,
+}
+
+
+def format_water(total_ml: int, target_ml: int) -> str:
+    total_l = total_ml / 1000
+    target_l = target_ml / 1000
+    pct = (total_ml / target_ml) if target_ml else 0
+    filled = max(0, min(10, round(pct * 10)))
+    bar = "▰" * filled + "░" * (10 - filled)
+    line = f"💧 Вода: {total_l:.2f} / {target_l:.1f} л"
+    if pct > 1.0:
+        line += f" ({round(pct * 100)}%)"
+    return f"{line}\n{bar}"
