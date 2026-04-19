@@ -353,6 +353,18 @@ def handle_voice(conn, message: dict) -> None:
         return
 
     safe = _html.escape(transcript, quote=False)
+
+    # If this voice message is a reply to the /ask force-reply prompt, route
+    # the transcript into the chat flow instead of the meal-logging flow.
+    reply_to = message.get("reply_to_message") or {}
+    if (
+        reply_to.get("from", {}).get("is_bot")
+        and reply_to.get("text") == ASK_PROMPT
+    ):
+        send_message(chat_id, f"🎙 Почув: «{safe}»")
+        handle_ask(conn, user_id, chat_id, transcript)
+        return
+
     send_message(chat_id, f"🎙 Почув: «{safe}»")
     save_pending_text(conn, user_id, transcript)
     send_message(chat_id, TEXT_PROMPT_MEAL_TYPE, reply_markup=meal_type_keyboard())
