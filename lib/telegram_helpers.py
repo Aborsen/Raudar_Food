@@ -142,12 +142,12 @@ def meals_list_keyboard(meals: list[dict]) -> dict:
 def main_menu_keyboard() -> dict:
     """Persistent reply keyboard shown below the input field."""
     from lib.formatters import (
-        BTN_ASK, BTN_FAV, BTN_WATER, BTN_TODAY, BTN_SUGGEST, BTN_PROFILE,
+        BTN_ASK, BTN_FAV, BTN_WATER, BTN_MEALS, BTN_SUGGEST, BTN_PROFILE,
     )
     return {
         "keyboard": [
             [{"text": BTN_ASK},     {"text": BTN_FAV}],
-            [{"text": BTN_WATER},   {"text": BTN_TODAY}],
+            [{"text": BTN_WATER},   {"text": BTN_MEALS}],
             [{"text": BTN_SUGGEST}, {"text": BTN_PROFILE}],
         ],
         "resize_keyboard": True,
