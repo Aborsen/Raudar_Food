@@ -1,4 +1,6 @@
 """Direct Telegram Bot API calls via httpx (no aiogram — serverless-friendly)."""
+import os
+
 import httpx
 
 from lib.config import DASHBOARD_TOKEN, TELEGRAM_BOT_TOKEN, VERCEL_URL
@@ -8,12 +10,22 @@ FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}"
 
 
 def _dashboard_url() -> str:
-    """Absolute HTTPS URL for the miniapp dashboard. Requires VERCEL_URL env var."""
+    """Absolute HTTPS URL for the miniapp dashboard.
+
+    Appends a ?v=<sha> version param derived from the current Vercel
+    deployment's git SHA. Telegram's iOS webview aggressively caches
+    mini-app HTML based on URL identity — changing the URL per deploy
+    forces a fresh fetch instead of serving stale cached content.
+    """
     host = (VERCEL_URL or "").replace("https://", "").replace("http://", "").rstrip("/")
     base = f"https://{host}/api/dashboard"
+    params = []
     if DASHBOARD_TOKEN:
-        return f"{base}?t={DASHBOARD_TOKEN}"
-    return base
+        params.append(f"t={DASHBOARD_TOKEN}")
+    sha = os.environ.get("VERCEL_GIT_COMMIT_SHA", "")[:8]
+    if sha:
+        params.append(f"v={sha}")
+    return f"{base}?{'&'.join(params)}" if params else base
 
 
 def send_message(chat_id: int, text: str, reply_markup: dict | None = None) -> dict:
