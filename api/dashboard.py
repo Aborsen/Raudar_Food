@@ -58,8 +58,12 @@ _SECURITY_HEADERS = [
     ("X-Content-Type-Options", "nosniff"),
     ("Referrer-Policy", "no-referrer"),
     # Telegram's in-app webview aggressively caches mini-app HTML, which causes
-    # stale dashboards when opening via direct link. Force a fresh fetch every time.
+    # stale dashboards when opening via direct link. Force a fresh fetch every
+    # time, at every layer (browser, Vercel CDN, and any intermediate proxy).
     ("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0"),
+    ("CDN-Cache-Control", "no-store"),
+    ("Vercel-CDN-Cache-Control", "no-store"),
+    ("Surrogate-Control", "no-store"),
     ("Pragma", "no-cache"),
     ("Expires", "0"),
     # Miniapps are loaded in Telegram's webview, so frame-ancestors must allow it.
@@ -235,6 +239,9 @@ _BOOTSTRAP_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Food Tracker</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
@@ -548,10 +555,6 @@ def _dispatch_action(conn, user_id: int, action: str) -> None:
         add_water(conn, user_id, 250)
     elif action == "water_undo":
         remove_last_water_today(conn, user_id)
-    elif action == "relog_last":
-        recent = get_recent_meals(conn, user_id, limit=1)
-        if recent:
-            clone_meal_for_today(conn, recent[0]["id"], user_id, _meal_type_by_hour())
 
 
 def _hero_card(cal: float, p: float, water_ml: int, hours_left: int, date_str: str) -> str:
@@ -614,17 +617,12 @@ def _adherence_line(week_rows: list[dict]) -> str:
 
 
 def _quick_actions_html(has_recent_meal: bool, water_today_ml: int) -> str:
-    relog_attr = '' if has_recent_meal else ' disabled'
-    relog_class = 'qa-btn' if has_recent_meal else 'qa-btn qa-btn-ghost'
     undo_attr = '' if water_today_ml > 0 else ' disabled'
     return (
         f'<div class="quick-actions">'
         f'  <button type="button" class="qa-btn" data-action="water_add:250">💧 +250 мл</button>'
-        f'  <button type="button" class="{relog_class}" data-action="relog_last"{relog_attr}>🔁 Остання</button>'
-        f'  <button type="button" class="qa-btn qa-btn-ghost" data-close>💬 До бота</button>'
-        f'</div>'
-        f'<div class="quick-actions-2">'
         f'  <button type="button" class="qa-btn qa-btn-ghost" data-action="water_undo"{undo_attr}>↩️ Скасувати воду</button>'
+        f'  <button type="button" class="qa-btn qa-btn-ghost" data-close="1">💬 До бота</button>'
         f'</div>'
     )
 
@@ -698,6 +696,9 @@ def _render_dashboard(user: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Food Tracker</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
@@ -773,9 +774,13 @@ def _render_dashboard(user: dict) -> str:
   .details-card {{ background: #16213e; border-radius: 12px; padding: 12px 16px;
                    margin-bottom: 14px; }}
   .details-card > summary {{ cursor: pointer; font-size: 1em; color: #e0e0e0;
-                             font-weight: 600; padding: 4px 0; list-style: none; }}
+                             font-weight: 600; padding: 4px 0; list-style: none;
+                             display: flex; align-items: center; gap: 6px; }}
   .details-card > summary::-webkit-details-marker {{ display: none; }}
   .details-card[open] > summary {{ margin-bottom: 10px; }}
+  .details-card .chev {{ display: inline-block; color: #e94560; font-weight: 700;
+                         transition: transform 0.18s ease; }}
+  .details-card[open] .chev {{ transform: rotate(90deg); }}
   .water-row {{ margin: 4px 0; }}
   .water-label {{ display: flex; justify-content: space-between; font-size: 0.9em;
                  color: #bdbdd0; margin-bottom: 6px; }}
@@ -834,7 +839,7 @@ def _render_dashboard(user: dict) -> str:
   {quick_actions_html}
 
   <details class="card details-card">
-    <summary>📐 Деталі макро</summary>
+    <summary><span class="chev">▸</span> 📋 Деталі дня</summary>
     <div class="macro">
       <div class="macro-label"><span>Калорії</span><b>{round(cal)} / {DAILY_CAL_TARGET} ккал</b></div>
       <div class="bar">{_bar(cal, DAILY_CAL_TARGET)}</div>
@@ -987,8 +992,14 @@ def _render_dashboard(user: dict) -> str:
   document.querySelectorAll('[data-action]').forEach(function(el) {{
     el.addEventListener('click', function() {{ doAction(el.dataset.action, el); }});
   }});
+  function closeApp() {{
+    var tg = window.Telegram && window.Telegram.WebApp;
+    if (tg && typeof tg.close === 'function') {{ try {{ tg.close(); return; }} catch(e) {{}} }}
+    try {{ window.close(); }} catch(e) {{}}
+    try {{ history.back(); }} catch(e) {{}}
+  }}
   document.querySelectorAll('[data-close]').forEach(function(el) {{
-    el.addEventListener('click', function() {{ if (TG && TG.close) TG.close(); }});
+    el.addEventListener('click', closeApp);
   }});
 
   document.querySelectorAll('.tab').forEach(function(btn) {{
