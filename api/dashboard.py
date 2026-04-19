@@ -53,6 +53,30 @@ from lib.database import (
 # safe for a personal single-user bot where replay risk is negligible.
 INIT_DATA_MAX_AGE = 30 * 24 * 60 * 60
 
+
+_BOT_USERNAME_CACHE: str | None = None
+
+
+def _get_bot_username() -> str:
+    """Look up the bot username via Telegram getMe once per cold start."""
+    global _BOT_USERNAME_CACHE
+    if _BOT_USERNAME_CACHE is not None:
+        return _BOT_USERNAME_CACHE
+    try:
+        import httpx
+        r = httpx.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe",
+            timeout=5,
+        )
+        data = r.json()
+        if data.get("ok"):
+            _BOT_USERNAME_CACHE = (data.get("result") or {}).get("username", "") or ""
+        else:
+            _BOT_USERNAME_CACHE = ""
+    except Exception:
+        _BOT_USERNAME_CACHE = ""
+    return _BOT_USERNAME_CACHE
+
 _SECURITY_HEADERS = [
     ("Strict-Transport-Security", "max-age=63072000; includeSubDomains"),
     ("X-Content-Type-Options", "nosniff"),
@@ -690,6 +714,8 @@ def _render_dashboard(user: dict) -> str:
     adherence_line = _adherence_line(week)
     quick_actions_html = _quick_actions_html(bool(recent_last), water_today)
     _js_token = json.dumps(DASHBOARD_TOKEN or "")
+    _bot_username = _get_bot_username()
+    _js_bot_url = json.dumps(f"https://t.me/{_bot_username}" if _bot_username else "")
 
     return f"""<!DOCTYPE html>
 <html lang="uk">
@@ -969,6 +995,7 @@ def _render_dashboard(user: dict) -> str:
     TG.expand();
   }}
   var DASHBOARD_TOKEN = {_js_token};
+  var BOT_URL = {_js_bot_url};
 
   function doAction(action, btn) {{
     if (btn && btn.disabled) return;
@@ -994,6 +1021,9 @@ def _render_dashboard(user: dict) -> str:
   }});
   function closeApp() {{
     var tg = window.Telegram && window.Telegram.WebApp;
+    if (BOT_URL && tg && typeof tg.openTelegramLink === 'function') {{
+      try {{ tg.openTelegramLink(BOT_URL); return; }} catch(e) {{}}
+    }}
     if (tg && typeof tg.close === 'function') {{ try {{ tg.close(); return; }} catch(e) {{}} }}
     try {{ window.close(); }} catch(e) {{}}
     try {{ history.back(); }} catch(e) {{}}
