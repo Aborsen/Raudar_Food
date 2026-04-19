@@ -1016,10 +1016,14 @@ def _render_dashboard(user: dict) -> str:
     el.addEventListener('click', function() {{ doAction(el.dataset.action, el); }});
   }});
   function closeApp() {{
-    // Try to navigate to the bot chat. If we're already there, this is a
-    // no-op — which is why we DO NOT return after the call: we always fall
-    // through to close() so the mini-app overlay drops either way.
-    if (BOT_URL && TG && typeof TG.openTelegramLink === 'function') {{
+    // If we have initData, we were launched from a proper Telegram button
+    // inside the bot chat — close() alone returns the user there, and
+    // skipping openTelegramLink avoids the phantom haptic tap it produces
+    // when it tries to navigate to the chat you're already in.
+    // If initData is empty (token-bypass GET from a direct link), we're
+    // outside the bot chat and need openTelegramLink to navigate.
+    var hasInitData = !!(TG && TG.initData);
+    if (!hasInitData && BOT_URL && TG && typeof TG.openTelegramLink === 'function') {{
       try {{ TG.openTelegramLink(BOT_URL); }} catch(e) {{}}
     }}
     if (TG && typeof TG.close === 'function') {{
