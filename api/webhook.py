@@ -46,7 +46,18 @@ from lib.database import (
     get_water_today,
     get_water_target,
     set_water_target,
+    get_user_settings,
+    set_user_weight,
+    set_user_fitness_goal,
+    log_weight,
+    get_last_weight,
+    get_last_weight_log_date,
+    get_weight_history,
+    set_awaiting_weight,
+    get_awaiting_weight,
+    clear_awaiting_weight,
 )
+from lib.targets import compute_targets, get_user_targets
 from lib.telegram_helpers import (
     send_message,
     answer_callback_query,
@@ -278,6 +289,11 @@ def process_update(update: dict) -> None:
             handle_ask(conn, user_id, chat_id, text)
             return
 
+        # Check if user is awaiting a weight input (profile edit / weekly check-in)
+        if user_id and get_awaiting_weight(conn, user_id):
+            handle_weight_input(conn, message, text)
+            return
+
         # Check if user is awaiting manual input for moderation
         if user_id:
             pending = get_pending_analysis(conn, user_id)
@@ -388,6 +404,10 @@ def handle_callback(conn, cb: dict) -> None:
         handle_undo_callback(conn, cb)
     elif data.startswith("water:"):
         handle_water_callback(conn, cb)
+    elif data.startswith("profile:"):
+        handle_profile_callback(conn, cb)
+    elif data.startswith("weigh_in:"):
+        handle_weigh_in_callback(conn, cb)
     elif data == "noop":
         answer_callback_query(cb["id"])
     else:
@@ -470,9 +490,10 @@ def handle_moderation_callback(conn, cb: dict) -> None:
         new_meal_id = save_meal(conn, user_id, pending["meal_type"], analysis, pending["photo_file_id"] or "", pending["raw_response"])
         upsert_daily_log_from_meal(conn, user_id, analysis)
         today_log = get_today_log(conn, user_id)
+        targets = get_user_targets(conn, user_id)
         send_message(
             chat_id,
-            format_meal_logged(pending["meal_type"], analysis, today_log, first_name),
+            format_meal_logged(pending["meal_type"], analysis, today_log, first_name, targets=targets),
             reply_markup=meal_logged_actions_keyboard(new_meal_id, is_fav=False),
         )
 
@@ -596,7 +617,8 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
 
     if cmd == "/today":
         log = get_today_log(conn, user_id)
-        send_message(chat_id, format_today_progress(log, first_name), reply_markup=main_menu_keyboard())
+        targets = get_user_targets(conn, user_id)
+        send_message(chat_id, format_today_progress(log, first_name, targets=targets), reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/yesterday":
@@ -605,7 +627,8 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
         y = (datetime.now(LOCAL_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
         log = get_log_for_date(conn, user_id, y)
         meals = get_meals_for_day(conn, user_id, y)
-        send_message(chat_id, format_yesterday(log, meals, first_name), reply_markup=main_menu_keyboard())
+        targets = get_user_targets(conn, user_id)
+        send_message(chat_id, format_yesterday(log, meals, first_name, targets=targets), reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/meals":
@@ -619,7 +642,8 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
 
     if cmd == "/history":
         rows = get_history(conn, user_id, days=7)
-        send_message(chat_id, format_history(rows), reply_markup=main_menu_keyboard())
+        targets = get_user_targets(conn, user_id)
+        send_message(chat_id, format_history(rows, targets=targets), reply_markup=main_menu_keyboard())
         return
 
     if cmd == "/history_detail":
@@ -634,9 +658,10 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
     if cmd == "/suggest_meal":
         log = get_today_log(conn, user_id)
         meals = get_meals_for_day(conn, user_id, log["date"])
+        targets = get_user_targets(conn, user_id)
         send_message(chat_id, SUGGEST_THINKING)
         try:
-            recipe = suggest_meal(log, meals)
+            recipe = suggest_meal(log, meals, targets=targets)
         except Exception as e:
             print("suggest error:", e, flush=True)
             send_message(chat_id, SUGGEST_FAILED, reply_markup=main_menu_keyboard())
@@ -697,17 +722,7 @@ def handle_command(conn, message: dict, text: str, first_name: str | None) -> No
         return
 
     if cmd == "/profile":
-        from lib.config import USER_PROFILE, DAILY_CAL_TARGET, MACRO_GRAM_TARGETS
-        lines = [
-            "⚙️ <b>Профіль</b>",
-            f"🎯 Ціль: {USER_PROFILE.get('goal', '—')}",
-            f"🔥 Калорії: {DAILY_CAL_TARGET} ккал/день",
-            f"🥩 Білки: {MACRO_GRAM_TARGETS['protein']} г",
-            f"🍞 Вуглеводи: {MACRO_GRAM_TARGETS['carbs']} г",
-            f"🥑 Жири: {MACRO_GRAM_TARGETS['fat']} г",
-            f"💧 Вода: {get_water_target(conn, user_id)} мл/день",
-        ]
-        send_message(chat_id, "\n".join(lines), reply_markup=main_menu_keyboard())
+        send_profile_card(conn, chat_id, user_id)
         return
 
     send_message(chat_id, UNKNOWN_COMMAND)
@@ -928,7 +943,8 @@ def handle_ask(conn, user_id: int, chat_id: int, question: str) -> None:
         today_log = get_today_log(conn, user_id)
         today_meals = get_meals_for_day(conn, user_id, today_log["date"])
         history = get_chat_history(conn, user_id, limit=10, minutes=60)
-        answer = ask_chat(question, history, today_log, today_meals)
+        targets = get_user_targets(conn, user_id)
+        answer = ask_chat(question, history, today_log, today_meals, targets=targets)
     except Exception as e:
         print("ask_chat error:", traceback.format_exc(), flush=True)
         # Re-attach main menu so the keyboard isn't lost after force_reply
@@ -941,3 +957,234 @@ def handle_ask(conn, user_id: int, chat_id: int, question: str) -> None:
     # Re-attach the main menu keyboard — force_reply on the prompt removes it
     # from the UI, so without this the buttons disappear after the answer.
     send_message(chat_id, answer, reply_markup=main_menu_keyboard())
+
+
+# ---------- Profile: weight + fitness goal ----------
+
+FITNESS_GOAL_UA = {
+    "gain": "🏋️ Набір",
+    "maintain": "⚖️ Підтримання",
+    "lose": "🔥 Схуднення",
+}
+
+
+def _profile_keyboard() -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "⚖️ Змінити вагу", "callback_data": "profile:weight"},
+                {"text": "🎯 Змінити ціль", "callback_data": "profile:goal"},
+            ],
+            [{"text": "📏 Історія ваги", "callback_data": "profile:history"}],
+        ]
+    }
+
+
+def _goal_picker_keyboard() -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🏋️ Набір", "callback_data": "profile:goal:set:gain"},
+                {"text": "⚖️ Підтримання", "callback_data": "profile:goal:set:maintain"},
+                {"text": "🔥 Схуднення", "callback_data": "profile:goal:set:lose"},
+            ],
+            [{"text": "⬅️ Назад", "callback_data": "profile:back"}],
+        ]
+    }
+
+
+def _format_profile_text(conn, user_id: int) -> str:
+    settings = get_user_settings(conn, user_id)
+    targets = get_user_targets(conn, user_id)
+    last_log = get_last_weight_log_date(conn, user_id)
+
+    from datetime import datetime as _dt
+    weight_line = f"⚖️ Вага: {targets['weight_kg']:g} кг"
+    if last_log:
+        try:
+            dt = _dt.fromisoformat(last_log.replace("Z", "+00:00"))
+            age_hours = (_dt.now(dt.tzinfo) - dt).total_seconds() / 3600
+            if age_hours < 24:
+                weight_line += " (сьогодні)"
+            elif age_hours < 24 * 14:
+                weight_line += f" ({int(age_hours / 24)} дн. тому)"
+            else:
+                weight_line += f" ({dt.strftime('%Y-%m-%d')})"
+        except Exception:
+            pass
+    elif settings.get("weight_kg") is None:
+        weight_line += " (з профілю за замовчуванням)"
+
+    goal_label = FITNESS_GOAL_UA.get(targets["goal"], targets["goal"])
+    water_ml = get_water_target(conn, user_id)
+
+    return (
+        "⚙️ <b>Профіль</b>\n"
+        f"\n{weight_line}\n"
+        f"🎯 Ціль: {goal_label}\n"
+        "\n📊 <b>Цілі на день</b>\n"
+        f"  🔥 Калорії: {targets['calories']} ккал\n"
+        f"  🥩 Білки: {targets['protein']} г\n"
+        f"  🍞 Вуглеводи: {targets['carbs']} г\n"
+        f"  🥑 Жири: {targets['fat']} г\n"
+        f"  💧 Вода: {water_ml} мл"
+    )
+
+
+def send_profile_card(conn, chat_id: int, user_id: int) -> None:
+    send_message(chat_id, _format_profile_text(conn, user_id),
+                 reply_markup=_profile_keyboard())
+
+
+def handle_profile_callback(conn, cb: dict) -> None:
+    cb_id = cb["id"]
+    data = cb["data"]
+    user_id = cb["from"]["id"]
+    message = cb.get("message", {}) or {}
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "weight":
+        set_awaiting_weight(conn, user_id, True)
+        answer_callback_query(cb_id)
+        send_message(
+            chat_id,
+            "⚖️ Введи вагу в кг (наприклад <b>98.5</b>). Діапазон 40–250.",
+            reply_markup={"force_reply": True, "selective": True},
+        )
+        return
+
+    if action == "goal":
+        if len(parts) >= 4 and parts[2] == "set":
+            new_goal = parts[3]
+            if new_goal not in ("gain", "maintain", "lose"):
+                answer_callback_query(cb_id, "Невідома ціль")
+                return
+            set_user_fitness_goal(conn, user_id, new_goal)
+            new_targets = get_user_targets(conn, user_id)
+            answer_callback_query(cb_id, f"🎯 {FITNESS_GOAL_UA[new_goal]}")
+            text = (
+                f"🎯 Ціль оновлено: <b>{FITNESS_GOAL_UA[new_goal]}</b>\n\n"
+                f"📊 Нові цілі на день:\n"
+                f"  🔥 Калорії: {new_targets['calories']} ккал\n"
+                f"  🥩 Білки: {new_targets['protein']} г\n"
+                f"  🍞 Вуглеводи: {new_targets['carbs']} г\n"
+                f"  🥑 Жири: {new_targets['fat']} г"
+            )
+            if chat_id and message_id:
+                edit_message_text(chat_id, message_id, text, reply_markup=_profile_keyboard())
+            return
+        answer_callback_query(cb_id)
+        if chat_id and message_id:
+            edit_message_reply_markup(chat_id, message_id, _goal_picker_keyboard())
+        return
+
+    if action == "back":
+        answer_callback_query(cb_id)
+        if chat_id and message_id:
+            edit_message_text(chat_id, message_id, _format_profile_text(conn, user_id),
+                              reply_markup=_profile_keyboard())
+        return
+
+    if action == "history":
+        hist = get_weight_history(conn, user_id, limit=15)
+        answer_callback_query(cb_id)
+        if not hist:
+            send_message(chat_id, "📏 Історії ваги ще немає.")
+            return
+        lines = ["📏 <b>Історія ваги</b>"]
+        for row in hist:
+            ts = row["logged_at"][:10]
+            lines.append(f"• {ts}: {row['weight_kg']:g} кг")
+        send_message(chat_id, "\n".join(lines))
+        return
+
+    answer_callback_query(cb_id, "Невідома дія")
+
+
+def handle_weight_input(conn, message: dict, text: str) -> None:
+    chat_id = message["chat"]["id"]
+    user_id = message["from"]["id"]
+
+    # Parse weight — accept "98", "98.5", "98,5", "98.5 kg", "98 кг"
+    raw = text.replace(",", ".").replace("кг", "").replace("kg", "").strip()
+    try:
+        weight = float(raw.split()[0])
+    except (ValueError, IndexError):
+        send_message(chat_id, "🤔 Не зрозумів число. Приклад: <b>98.5</b>")
+        return
+
+    if weight < 40 or weight > 250:
+        send_message(chat_id, "⚠️ Значення поза діапазоном 40–250 кг. Спробуй ще.")
+        return
+
+    clear_awaiting_weight(conn, user_id)
+
+    prev_weight = get_last_weight(conn, user_id)
+    if prev_weight is not None and abs(prev_weight - weight) < 0.05:
+        send_message(
+            chat_id,
+            f"📏 Вага без змін ({weight:g} кг). Цілі залишаються ті самі.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    set_user_weight(conn, user_id, weight)
+    log_weight(conn, user_id, weight)
+
+    new_targets = get_user_targets(conn, user_id)
+    settings = get_user_settings(conn, user_id)
+    old_targets = (
+        compute_targets(prev_weight, settings["fitness_goal"])
+        if prev_weight is not None else None
+    )
+
+    if old_targets:
+        delta = new_targets["calories"] - old_targets["calories"]
+        sign = "+" if delta > 0 else ""
+        delta_line = f"  🔥 {new_targets['calories']} ккал (було {old_targets['calories']}, {sign}{delta})\n"
+    else:
+        delta_line = f"  🔥 {new_targets['calories']} ккал\n"
+
+    prev_line = f" (було {prev_weight:g})" if prev_weight is not None else ""
+    send_message(
+        chat_id,
+        f"✅ Записав: {weight:g} кг{prev_line}\n\n"
+        f"🎯 Нові цілі на день:\n"
+        f"{delta_line}"
+        f"  🥩 {new_targets['protein']} г білків\n"
+        f"  🍞 {new_targets['carbs']} г вуглеводів\n"
+        f"  🥑 {new_targets['fat']} г жирів",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+def handle_weigh_in_callback(conn, cb: dict) -> None:
+    """Handlers for the weekly weigh-in prompt: 'Ввести вагу' / 'Пропустити'."""
+    cb_id = cb["id"]
+    data = cb["data"]
+    user_id = cb["from"]["id"]
+    message = cb.get("message", {}) or {}
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+
+    action = data.split(":", 1)[1] if ":" in data else ""
+    if action == "log":
+        set_awaiting_weight(conn, user_id, True)
+        answer_callback_query(cb_id)
+        if chat_id and message_id:
+            edit_message_text(
+                chat_id, message_id,
+                "⚖️ Введи вагу в кг (наприклад <b>98.5</b>). Діапазон 40–250.",
+            )
+        return
+    if action == "skip":
+        answer_callback_query(cb_id, "Пропущено")
+        if chat_id and message_id:
+            edit_message_text(chat_id, message_id,
+                              "⏭ Ок, до наступного тижня. Не забувай зважуватись!")
+        return
+    answer_callback_query(cb_id, "Невідома дія")

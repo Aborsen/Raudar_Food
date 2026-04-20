@@ -54,12 +54,38 @@ USER_PROFILE = {
     "allergies_and_intolerances": [],  # none
 }
 
-DAILY_CAL_TARGET = USER_PROFILE["daily_calorie_target"]
-# Grams targets derived from percentages (protein & carbs: 4 cal/g, fat: 9 cal/g)
+# Per-kg macro targets by fitness goal (sourced from the user's spreadsheet
+# "Food Djini Calories macros.xlsx" — verified against cached cell values).
+# Macro calorie densities: protein & carbs 4 kcal/g, fat 9 kcal/g.
+MACRO_GRAMS_PER_KG = {
+    "gain":     {"protein": 2.2, "fat": 1.0, "carbs": 5.0},
+    "maintain": {"protein": 2.0, "fat": 0.9, "carbs": 3.5},
+    "lose":     {"protein": 2.0, "fat": 0.8, "carbs": 2.5},
+}
+
+FITNESS_GOAL_CHOICES = ("gain", "maintain", "lose")
+
+FITNESS_GOAL_LABELS = {
+    "gain": "🏋️ Набір",
+    "maintain": "⚖️ Підтримання",
+    "lose": "🔥 Схуднення",
+}
+
+
+def _compute_default_calories() -> int:
+    """Fallback target used when no per-user weight is logged yet."""
+    w = USER_PROFILE["weight_kg"]
+    gpk = MACRO_GRAMS_PER_KG["maintain"]
+    return round(w * (gpk["protein"] * 4 + gpk["fat"] * 9 + gpk["carbs"] * 4))
+
+
+# Legacy constants — kept as fallbacks for callers that haven't been migrated
+# to per-user targets yet. Reflect the default profile at maintain goal.
+DAILY_CAL_TARGET = _compute_default_calories()
 MACRO_GRAM_TARGETS = {
-    "protein": round(DAILY_CAL_TARGET * USER_PROFILE["macro_targets"]["protein"] / 100 / 4),
-    "carbs": round(DAILY_CAL_TARGET * USER_PROFILE["macro_targets"]["carbs"] / 100 / 4),
-    "fat": round(DAILY_CAL_TARGET * USER_PROFILE["macro_targets"]["fat"] / 100 / 9),
+    "protein": round(USER_PROFILE["weight_kg"] * MACRO_GRAMS_PER_KG["maintain"]["protein"]),
+    "carbs":   round(USER_PROFILE["weight_kg"] * MACRO_GRAMS_PER_KG["maintain"]["carbs"]),
+    "fat":     round(USER_PROFILE["weight_kg"] * MACRO_GRAMS_PER_KG["maintain"]["fat"]),
 }
 
 
@@ -159,18 +185,18 @@ RECALC_PROMPT = (
 )
 
 
-SUMMARY_PROMPT_TEMPLATE = """You are a nutrition coach for a 35-year-old man who is an advanced lifter (bench ~200 kg, squat ~200+, deadlift ~250) on a slow cut — wants to lose fat while preserving muscle. Daily target: 3,300 kcal at 30/45/25 protein/carbs/fat (~247 g P / 371 g C / 92 g F).
+SUMMARY_PROMPT_TEMPLATE = """You are a nutrition coach for an advanced lifter. The user's current daily targets are computed from their current weight + fitness goal.
 
 RESPOND ENTIRELY IN UKRAINIAN. Tone: matter-of-fact, focused, no fluff, 1 small joke OK. Use the section headers: ✅ ЩО БУЛО ДОБРЕ, ⚠️ ЩО МОЖНА ПОКРАЩИТИ, 💡 ПОРАДИ НА ЗАВТРА, 🍽️ ІДЕЯ СТРАВИ НА ЗАВТРА.
 
 Here is his food intake for today:
 {meals_json}
 
-Daily totals:
-- Calories: {total_cal} / 3300
-- Protein: {protein}g / 247g target (priority #1 on a cut)
-- Carbs: {carbs}g / 371g target
-- Fat: {fat}g / 92g target
+Daily totals vs targets:
+- Calories: {total_cal} / {target_cal}
+- Protein: {protein}g / {target_protein}g target (priority #1)
+- Carbs: {carbs}g / {target_carbs}g target
+- Fat: {fat}g / {target_fat}g target
 - Fiber: {fiber}g
 - Sugar: {sugar}g
 
@@ -213,11 +239,9 @@ GUIDANCE:
 - Unrelated questions: answer briefly, note you specialize in food + training nutrition."""
 
 
-RECIPE_PROMPT_TEMPLATE = """You are a meal-planning assistant for a 35-year-old man, 187 cm, 120 kg, ~18–20% BF, advanced lifter on a slow cut.
+RECIPE_PROMPT_TEMPLATE = """You are a meal-planning assistant for an advanced lifter.
 
 RESPOND ENTIRELY IN UKRAINIAN. Matter-of-fact tone, a tiny joke only if natural. No fluff.
-
-Daily targets: 3300 kcal, 247g protein, 371g carbs, 92g fat.
 No allergies, no dietary restrictions.
 
 Training week: Tue/Thu/Sat weightlifting, Mon/Wed cardio.

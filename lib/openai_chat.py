@@ -41,15 +41,22 @@ def ask_chat(
     history: list[dict],
     today_log: dict,
     today_meals: list[dict],
+    targets: dict | None = None,
 ) -> str:
     """Run one chat turn. `history` is already in OpenAI format (role/content dicts).
 
     The system prompt is rebuilt each call so today's intake is always fresh.
     """
-    remaining_cal = max(0, DAILY_CAL_TARGET - (today_log.get("calories") or 0))
-    remaining_p = max(0, MACRO_GRAM_TARGETS["protein"] - (today_log.get("protein") or 0))
-    remaining_c = max(0, MACRO_GRAM_TARGETS["carbs"] - (today_log.get("carbs") or 0))
-    remaining_f = max(0, MACRO_GRAM_TARGETS["fat"] - (today_log.get("fat") or 0))
+    t = targets or {
+        "calories": DAILY_CAL_TARGET,
+        "protein": MACRO_GRAM_TARGETS["protein"],
+        "carbs": MACRO_GRAM_TARGETS["carbs"],
+        "fat": MACRO_GRAM_TARGETS["fat"],
+    }
+    remaining_cal = max(0, t["calories"] - (today_log.get("calories") or 0))
+    remaining_p = max(0, t["protein"] - (today_log.get("protein") or 0))
+    remaining_c = max(0, t["carbs"] - (today_log.get("carbs") or 0))
+    remaining_f = max(0, t["fat"] - (today_log.get("fat") or 0))
 
     system = CHAT_SYSTEM_PROMPT.format(
         today_intake=_render_today_intake(today_meals),

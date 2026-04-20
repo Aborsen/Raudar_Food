@@ -23,6 +23,7 @@ from lib.database import (
 )
 from lib.telegram_helpers import send_message
 from lib.openai_nutrition import generate_daily_summary
+from lib.targets import get_user_targets
 
 
 def _authorized(headers) -> bool:
@@ -59,14 +60,15 @@ def run_daily_summary() -> dict:
     errors = []
     try:
         init_db(conn)
-        targets = get_users_needing_summary(conn)
-        for user_id, date in targets:
+        pending = get_users_needing_summary(conn)
+        for user_id, date in pending:
             try:
                 # Fetch fresh log + meals for this user/date
                 # (get_today_log uses current UTC date; that's fine because cron runs same day)
                 log = get_today_log(conn, user_id)
                 meals = get_meals_for_day(conn, user_id, date)
-                text = generate_daily_summary(meals, log)
+                user_targets = get_user_targets(conn, user_id)
+                text = generate_daily_summary(meals, log, targets=user_targets)
                 send_message(user_id, text)
                 save_recommendation(conn, user_id, date, text)
                 mark_summary_sent(conn, user_id, date)

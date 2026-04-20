@@ -154,7 +154,9 @@ def format_meal_logged(
     analysis: dict,
     today_log: dict,
     first_name: str | None = None,
+    targets: dict | None = None,
 ) -> str:
+    t_cal = _resolve_targets(targets)["calories"]
     nutrition = analysis.get("nutrition", {}) or {}
     dish = analysis.get("dish_name") or "Страва"
     date_display = _ua_date_long(datetime.now(LOCAL_TZ))
@@ -177,7 +179,7 @@ def format_meal_logged(
 
     lines.append("")
     lines.append(
-        f"📊 Разом за день: {round(today_log.get('calories', 0))} / {DAILY_CAL_TARGET} ккал"
+        f"📊 Разом за день: {round(today_log.get('calories', 0))} / {t_cal} ккал"
     )
 
     if first_name:
@@ -255,7 +257,21 @@ def help_message() -> str:
     )
 
 
-def format_today_progress(log: dict, first_name: str | None = None) -> str:
+def _resolve_targets(targets: dict | None) -> dict:
+    """Default to module-level constants if no per-user targets are passed."""
+    if targets:
+        return targets
+    return {
+        "calories": DAILY_CAL_TARGET,
+        "protein": MACRO_GRAM_TARGETS["protein"],
+        "carbs": MACRO_GRAM_TARGETS["carbs"],
+        "fat": MACRO_GRAM_TARGETS["fat"],
+    }
+
+
+def format_today_progress(log: dict, first_name: str | None = None, targets: dict | None = None) -> str:
+    t = _resolve_targets(targets)
+    t_cal, t_p, t_c, t_f = t["calories"], t["protein"], t["carbs"], t["fat"]
     date_display = _ua_date_long(datetime.now(LOCAL_TZ))
     cal = log.get("calories", 0)
     p = log.get("protein", 0)
@@ -264,16 +280,16 @@ def format_today_progress(log: dict, first_name: str | None = None) -> str:
     fib = log.get("fiber", 0)
     sug = log.get("sugar", 0)
     meals = log.get("meal_count", 0)
-    remaining = max(0, DAILY_CAL_TARGET - cal)
+    remaining = max(0, t_cal - cal)
     name = _name_or_default(first_name)
 
     if meals == 0:
         quip = "Поки порожньо, як у холодильнику студента перед стипендією. 😅"
-    elif cal < DAILY_CAL_TARGET * 0.5:
+    elif cal < t_cal * 0.5:
         quip = "Ще є місце для маневрів (і для курки з рисом). 🍚"
-    elif cal < DAILY_CAL_TARGET * 0.9:
+    elif cal < t_cal * 0.9:
         quip = "Цілковита гармонія — продовжуй у тому ж дусі. 💪"
-    elif cal <= DAILY_CAL_TARGET * 1.05:
+    elif cal <= t_cal * 1.05:
         quip = "Ідеально в ціль, як снайпер по котлеті. 🎯"
     else:
         quip = "Сьогодні ми святкували. Завтра — легше. 😉"
@@ -282,14 +298,14 @@ def format_today_progress(log: dict, first_name: str | None = None) -> str:
         f"📊 <b>Прогрес на сьогодні ({date_display})</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 {name}\n"
-        f"🔥 Калорії:  {round(cal)} / {DAILY_CAL_TARGET} ({_pct(cal, DAILY_CAL_TARGET)}%)\n"
-        f"   {_bar(cal, DAILY_CAL_TARGET)}\n"
-        f"🥩 Білки:    {round(p)}г / {MACRO_GRAM_TARGETS['protein']}г ({_pct(p, MACRO_GRAM_TARGETS['protein'])}%)\n"
-        f"   {_bar(p, MACRO_GRAM_TARGETS['protein'])}\n"
-        f"🍚 Вуглеводи:{round(c)}г / {MACRO_GRAM_TARGETS['carbs']}г ({_pct(c, MACRO_GRAM_TARGETS['carbs'])}%)\n"
-        f"   {_bar(c, MACRO_GRAM_TARGETS['carbs'])}\n"
-        f"🧈 Жири:     {round(f)}г / {MACRO_GRAM_TARGETS['fat']}г ({_pct(f, MACRO_GRAM_TARGETS['fat'])}%)\n"
-        f"   {_bar(f, MACRO_GRAM_TARGETS['fat'])}\n"
+        f"🔥 Калорії:  {round(cal)} / {t_cal} ({_pct(cal, t_cal)}%)\n"
+        f"   {_bar(cal, t_cal)}\n"
+        f"🥩 Білки:    {round(p)}г / {t_p}г ({_pct(p, t_p)}%)\n"
+        f"   {_bar(p, t_p)}\n"
+        f"🍚 Вуглеводи:{round(c)}г / {t_c}г ({_pct(c, t_c)}%)\n"
+        f"   {_bar(c, t_c)}\n"
+        f"🧈 Жири:     {round(f)}г / {t_f}г ({_pct(f, t_f)}%)\n"
+        f"   {_bar(f, t_f)}\n"
         f"📈 Клітковина: {round(fib)}г\n"
         f"🍬 Цукор:      {round(sug)}г\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -299,8 +315,10 @@ def format_today_progress(log: dict, first_name: str | None = None) -> str:
     )
 
 
-def format_yesterday(log: dict, meals: list[dict], first_name: str | None = None) -> str:
+def format_yesterday(log: dict, meals: list[dict], first_name: str | None = None, targets: dict | None = None) -> str:
     """Yesterday's progress + meal list in one message."""
+    t = _resolve_targets(targets)
+    t_cal, t_p, t_c, t_f = t["calories"], t["protein"], t["carbs"], t["fat"]
     date_str = log.get("date", "")
     try:
         date_display = _ua_date_long(datetime.strptime(date_str, "%Y-%m-%d"))
@@ -334,14 +352,14 @@ def format_yesterday(log: dict, meals: list[dict], first_name: str | None = None
         f"📆 <b>Вчора ({date_display})</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 {name}\n"
-        f"🔥 Калорії:  {round(cal)} / {DAILY_CAL_TARGET} ({_pct(cal, DAILY_CAL_TARGET)}%)\n"
-        f"   {_bar(cal, DAILY_CAL_TARGET)}\n"
-        f"🥩 Білки:    {round(p)}г / {MACRO_GRAM_TARGETS['protein']}г\n"
-        f"   {_bar(p, MACRO_GRAM_TARGETS['protein'])}\n"
-        f"🍚 Вуглеводи:{round(c)}г / {MACRO_GRAM_TARGETS['carbs']}г\n"
-        f"   {_bar(c, MACRO_GRAM_TARGETS['carbs'])}\n"
-        f"🧈 Жири:     {round(f)}г / {MACRO_GRAM_TARGETS['fat']}г\n"
-        f"   {_bar(f, MACRO_GRAM_TARGETS['fat'])}\n"
+        f"🔥 Калорії:  {round(cal)} / {t_cal} ({_pct(cal, t_cal)}%)\n"
+        f"   {_bar(cal, t_cal)}\n"
+        f"🥩 Білки:    {round(p)}г / {t_p}г\n"
+        f"   {_bar(p, t_p)}\n"
+        f"🍚 Вуглеводи:{round(c)}г / {t_c}г\n"
+        f"   {_bar(c, t_c)}\n"
+        f"🧈 Жири:     {round(f)}г / {t_f}г\n"
+        f"   {_bar(f, t_f)}\n"
         f"📈 Клітковина: {round(fib)}г\n"
         f"🍬 Цукор:      {round(sug)}г\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -350,13 +368,14 @@ def format_yesterday(log: dict, meals: list[dict], first_name: str | None = None
     )
 
 
-def format_history(rows: list[dict]) -> str:
+def format_history(rows: list[dict], targets: dict | None = None) -> str:
     if not rows:
         return (
             "📅 Історії ще немає.\n"
             "Надішли перше фото — і ми почнемо писати цю кулінарну сагу. 📖🍳"
         )
 
+    t_cal = _resolve_targets(targets)["calories"]
     lines = ["📅 <b>Останні 7 днів</b>"]
     for r in rows:
         cal = r.get("calories", 0)
@@ -373,9 +392,9 @@ def format_history(rows: list[dict]) -> str:
 
         if cal == 0:
             marker = ""
-        elif cal > DAILY_CAL_TARGET * 1.05:
+        elif cal > t_cal * 1.05:
             marker = "⚠️ перебір"
-        elif cal < DAILY_CAL_TARGET * 0.80:
+        elif cal < t_cal * 0.80:
             marker = "⚠️ замало"
         else:
             marker = "✅"

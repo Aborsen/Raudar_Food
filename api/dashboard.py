@@ -25,13 +25,12 @@ if _ROOT not in sys.path:
 
 from lib.config import (
     ALLOWED_USER_IDS,
-    DAILY_CAL_TARGET,
     DASHBOARD_TOKEN,
+    FITNESS_GOAL_LABELS,
     LOCAL_TZ,
-    MACRO_GRAM_TARGETS,
     TELEGRAM_BOT_TOKEN,
-    USER_PROFILE,
 )
+from lib.targets import get_user_targets
 from lib.database import (
     get_conn,
     init_db,
@@ -519,11 +518,15 @@ def _water_card(total_ml: int, target_ml: int) -> str:
     )
 
 
-def _summary_card(cal, p, c, f) -> str:
-    cal_pct = round((cal / DAILY_CAL_TARGET) * 100) if DAILY_CAL_TARGET else 0
-    p_pct = (p / MACRO_GRAM_TARGETS['protein']) if MACRO_GRAM_TARGETS['protein'] else 0
-    c_pct = (c / MACRO_GRAM_TARGETS['carbs']) if MACRO_GRAM_TARGETS['carbs'] else 0
-    f_pct = (f / MACRO_GRAM_TARGETS['fat']) if MACRO_GRAM_TARGETS['fat'] else 0
+def _summary_card(cal, p, c, f, targets: dict) -> str:
+    t_cal = targets["calories"]
+    t_p = targets["protein"]
+    t_c = targets["carbs"]
+    t_f = targets["fat"]
+    cal_pct = round((cal / t_cal) * 100) if t_cal else 0
+    p_pct = (p / t_p) if t_p else 0
+    c_pct = (c / t_c) if t_c else 0
+    f_pct = (f / t_f) if t_f else 0
 
     if cal == 0:
         headline = "Ще нічого не записано — додай перший прийом їжі."
@@ -534,7 +537,7 @@ def _summary_card(cal, p, c, f) -> str:
     elif cal_pct <= 105:
         headline = f"{cal_pct}% цілі — норма майже виконана 💪"
     else:
-        headline = f"{cal_pct}% цілі — перевищено норму на {round(cal - DAILY_CAL_TARGET)} ккал."
+        headline = f"{cal_pct}% цілі — перевищено норму на {round(cal - t_cal)} ккал."
 
     bullets = []
 
@@ -553,9 +556,9 @@ def _summary_card(cal, p, c, f) -> str:
     elif f_pct > 1.3:
         bullets.append("🥑 Жирів забагато — завтра менше масла й смаженого.")
 
-    if cal < DAILY_CAL_TARGET * 0.85:
+    if cal < t_cal * 0.85:
         bullets.append("🍽️ Додай ще їжі — калорійності для дня замало.")
-    elif cal > DAILY_CAL_TARGET * 1.05:
+    elif cal > t_cal * 1.05:
         bullets.append("🍽️ Калорії вже з запасом — завтра легший старт.")
 
     bullets_html = "".join(f'<p class="sum-line">{b}</p>' for b in bullets)
@@ -594,8 +597,8 @@ def _dispatch_action(conn, user_id: int, action: str) -> None:
         remove_last_water_today(conn, user_id)
 
 
-def _hero_card(cal: float, p: float, water_ml: int, hours_left: int, date_str: str) -> str:
-    target = DAILY_CAL_TARGET or 1
+def _hero_card(cal: float, p: float, water_ml: int, hours_left: int, date_str: str, targets: dict) -> str:
+    target = targets["calories"] or 1
     r = cal / target if target else 0
     if cal == 0:
         chip_cls, chip_emoji, chip_text = "info", "⚪", "ще нічого"
@@ -617,7 +620,7 @@ def _hero_card(cal: float, p: float, water_ml: int, hours_left: int, date_str: s
         big_html = f'<div class="big">{round(max(0, remaining)):,}</div><div class="unit">ккал лишилось</div>'
 
     time_hint = f"До кінця дня ~{hours_left} год" if hours_left > 0 else "День скоро зміниться"
-    p_target = MACRO_GRAM_TARGETS["protein"]
+    p_target = targets["protein"]
     water_l = water_ml / 1000
 
     return (
@@ -631,17 +634,21 @@ def _hero_card(cal: float, p: float, water_ml: int, hours_left: int, date_str: s
     )
 
 
-def _goal_header_html() -> str:
-    goal = (USER_PROFILE.get("goal") or "").strip()
-    if not goal:
+def _goal_header_html(targets: dict) -> str:
+    label = FITNESS_GOAL_LABELS.get(targets.get("goal", "maintain"), "")
+    weight = targets.get("weight_kg")
+    parts = []
+    if label:
+        parts.append(label)
+    if weight:
+        parts.append(f"{weight:g} кг")
+    if not parts:
         return ""
-    if len(goal) > 60:
-        goal = goal[:59] + "…"
-    return f'<p class="goal">🎯 {_esc(goal)}</p>'
+    return f'<p class="goal">🎯 {_esc(" · ".join(parts))}</p>'
 
 
-def _adherence_line(week_rows: list[dict]) -> str:
-    target = DAILY_CAL_TARGET or 1
+def _adherence_line(week_rows: list[dict], targets: dict) -> str:
+    target = targets["calories"] or 1
     days_logged = sum(1 for r in week_rows if (r.get("calories") or 0) > 0)
     if days_logged == 0:
         return "Твій прогрес · почнемо сьогодні"
@@ -685,6 +692,7 @@ def _render_dashboard(user: dict) -> str:
         water_target = get_water_target(conn, user_id)
         water_yday = get_water_for_date(conn, user_id, yday_date)
         recent_last = get_recent_meals(conn, user_id, limit=1)
+        targets = get_user_targets(conn, user_id)
     finally:
         try:
             conn.close()
@@ -715,16 +723,16 @@ def _render_dashboard(user: dict) -> str:
     day_filter_bar = _render_filter_bar("day", "Пошук (назва, тип…)")
     yday_filter_bar = _render_filter_bar("yesterday", "Пошук (назва, тип…)")
 
-    summary_html = _summary_card(cal, p, c, f)
-    yday_summary_html = _summary_card(y_cal, y_p, y_c, y_f)
+    summary_html = _summary_card(cal, p, c, f, targets)
+    yday_summary_html = _summary_card(y_cal, y_p, y_c, y_f, targets)
     water_html = _water_card(water_today, water_target)
     yday_water_html = _water_card(water_yday, water_target)
 
     now_kyiv = datetime.now(LOCAL_TZ)
     hours_left = max(0, 24 - now_kyiv.hour)
-    hero_html = _hero_card(cal, p, water_today, hours_left, log.get("date", ""))
-    goal_html = _goal_header_html()
-    adherence_line = _adherence_line(week)
+    hero_html = _hero_card(cal, p, water_today, hours_left, log.get("date", ""), targets)
+    goal_html = _goal_header_html(targets)
+    adherence_line = _adherence_line(week, targets)
     quick_actions_html = _quick_actions_html(bool(recent_last), water_today)
     _js_token = json.dumps(DASHBOARD_TOKEN or "")
     _bot_username = _get_bot_username()
@@ -886,10 +894,10 @@ def _render_dashboard(user: dict) -> str:
 
   <details class="card details-card">
     <summary><span class="chev">▸</span> 📋 Деталі дня</summary>
-    {_macro_row("Калорії", cal, DAILY_CAL_TARGET, "ккал")}
-    {_macro_row("Білки", p, MACRO_GRAM_TARGETS['protein'], "г")}
-    {_macro_row("Вуглеводи", c, MACRO_GRAM_TARGETS['carbs'], "г")}
-    {_macro_row("Жири", f, MACRO_GRAM_TARGETS['fat'], "г")}
+    {_macro_row("Калорії", cal, targets['calories'], "ккал")}
+    {_macro_row("Білки", p, targets['protein'], "г")}
+    {_macro_row("Вуглеводи", c, targets['carbs'], "г")}
+    {_macro_row("Жири", f, targets['fat'], "г")}
     <p class="sub" style="margin-top:10px">Страв записано: {meal_count}</p>
   </details>
 
@@ -914,10 +922,10 @@ def _render_dashboard(user: dict) -> str:
 <div class="view" data-view="yesterday">
   <div class="card">
     <h2>📆 Вчора ({_esc(yday_date)})</h2>
-    {_macro_row("Калорії", y_cal, DAILY_CAL_TARGET, "ккал")}
-    {_macro_row("Білки", y_p, MACRO_GRAM_TARGETS['protein'], "г")}
-    {_macro_row("Вуглеводи", y_c, MACRO_GRAM_TARGETS['carbs'], "г")}
-    {_macro_row("Жири", y_f, MACRO_GRAM_TARGETS['fat'], "г")}
+    {_macro_row("Калорії", y_cal, targets['calories'], "ккал")}
+    {_macro_row("Білки", y_p, targets['protein'], "г")}
+    {_macro_row("Вуглеводи", y_c, targets['carbs'], "г")}
+    {_macro_row("Жири", y_f, targets['fat'], "г")}
     <p class="sub" style="margin-top:10px">Страв записано: {y_meal_count}</p>
   </div>
 

@@ -39,6 +39,20 @@ def init_db(conn=None) -> None:
                 created_at TEXT
             )
         """)
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS weight_kg DOUBLE PRECISION")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS fitness_goal TEXT DEFAULT 'maintain'")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS weight_logs (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                weight_kg DOUBLE PRECISION NOT NULL,
+                logged_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_weight_logs_user_logged "
+            "ON weight_logs(user_id, logged_at DESC)"
+        )
         cur.execute("""
             CREATE TABLE IF NOT EXISTS daily_logs (
                 id BIGSERIAL PRIMARY KEY,
@@ -107,6 +121,7 @@ def init_db(conn=None) -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        cur.execute("ALTER TABLE pending_analyses ADD COLUMN IF NOT EXISTS awaiting_weight INTEGER DEFAULT 0")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 id BIGSERIAL PRIMARY KEY,
@@ -158,6 +173,134 @@ def upsert_user(conn, user_id: int, username: Optional[str]) -> None:
             (user_id, username or "", _now_iso()),
         )
     conn.commit()
+
+
+# ---------- Fitness profile (weight + goal) ----------
+
+def get_user_settings(conn, user_id: int) -> dict:
+    """Return {'weight_kg': float | None, 'fitness_goal': str}. Missing row → defaults."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT weight_kg, fitness_goal FROM users WHERE user_id = %s",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return {"weight_kg": None, "fitness_goal": "maintain"}
+    return {"weight_kg": row[0], "fitness_goal": row[1] or "maintain"}
+
+
+def set_user_weight(conn, user_id: int, weight_kg: float) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET weight_kg = %s WHERE user_id = %s",
+            (float(weight_kg), user_id),
+        )
+    conn.commit()
+
+
+def set_user_fitness_goal(conn, user_id: int, goal: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET fitness_goal = %s WHERE user_id = %s",
+            (goal, user_id),
+        )
+    conn.commit()
+
+
+def log_weight(conn, user_id: int, weight_kg: float) -> int:
+    """Insert a weight log entry, return the new row id."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO weight_logs (user_id, weight_kg) VALUES (%s, %s) RETURNING id",
+            (user_id, float(weight_kg)),
+        )
+        new_id = cur.fetchone()[0]
+    conn.commit()
+    return int(new_id)
+
+
+def get_last_weight(conn, user_id: int) -> Optional[float]:
+    """Most recent weight from weight_logs, or None if no log yet."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT weight_kg FROM weight_logs WHERE user_id = %s "
+            "ORDER BY logged_at DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    return float(row[0]) if row else None
+
+
+def get_last_weight_log_date(conn, user_id: int) -> Optional[str]:
+    """Most recent weight log timestamp (ISO), or None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT logged_at FROM weight_logs WHERE user_id = %s "
+            "ORDER BY logged_at DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    v = row[0]
+    return v.isoformat() if hasattr(v, "isoformat") else str(v)
+
+
+def get_weight_history(conn, user_id: int, limit: int = 20) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT weight_kg, logged_at FROM weight_logs WHERE user_id = %s "
+            "ORDER BY logged_at DESC LIMIT %s",
+            (user_id, limit),
+        )
+        rows = cur.fetchall()
+    out = []
+    for r in rows:
+        ts = r[1]
+        out.append({
+            "weight_kg": float(r[0]),
+            "logged_at": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+        })
+    return out
+
+
+def set_awaiting_weight(conn, user_id: int, flag: bool) -> None:
+    """Toggle the awaiting_weight flag on the user's pending_analyses row (create if missing)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM pending_analyses WHERE user_id = %s ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                "UPDATE pending_analyses SET awaiting_weight = %s WHERE id = %s",
+                (1 if flag else 0, row[0]),
+            )
+        elif flag:
+            cur.execute(
+                "INSERT INTO pending_analyses "
+                "(user_id, meal_type, analysis_json, awaiting_weight, created_at) "
+                "VALUES (%s, '', '{}', 1, %s)",
+                (user_id, _now_iso()),
+            )
+    conn.commit()
+
+
+def get_awaiting_weight(conn, user_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT awaiting_weight FROM pending_analyses WHERE user_id = %s "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def clear_awaiting_weight(conn, user_id: int) -> None:
+    set_awaiting_weight(conn, user_id, False)
 
 
 # ---------- Pending photos ----------

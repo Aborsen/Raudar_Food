@@ -21,7 +21,13 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def generate_daily_summary(meals: list[dict], totals: dict) -> str:
+def generate_daily_summary(meals: list[dict], totals: dict, targets: dict | None = None) -> str:
+    t = targets or {
+        "calories": DAILY_CAL_TARGET,
+        "protein": MACRO_GRAM_TARGETS["protein"],
+        "carbs": MACRO_GRAM_TARGETS["carbs"],
+        "fat": MACRO_GRAM_TARGETS["fat"],
+    }
     prompt = SUMMARY_PROMPT_TEMPLATE.format(
         meals_json=json.dumps(meals, indent=2, default=str),
         total_cal=round(totals.get("calories", 0)),
@@ -30,6 +36,10 @@ def generate_daily_summary(meals: list[dict], totals: dict) -> str:
         fat=round(totals.get("fat", 0)),
         fiber=round(totals.get("fiber", 0)),
         sugar=round(totals.get("sugar", 0)),
+        target_cal=t["calories"],
+        target_protein=t["protein"],
+        target_carbs=t["carbs"],
+        target_fat=t["fat"],
     )
     resp = _get_client().chat.completions.create(
         model="gpt-4o",
@@ -39,11 +49,17 @@ def generate_daily_summary(meals: list[dict], totals: dict) -> str:
     return (resp.choices[0].message.content or "").strip()
 
 
-def suggest_meal(today_log: dict, today_meals: list[dict]) -> str:
-    remaining_cal = max(0, DAILY_CAL_TARGET - today_log.get("calories", 0))
-    remaining_p = max(0, MACRO_GRAM_TARGETS["protein"] - today_log.get("protein", 0))
-    remaining_c = max(0, MACRO_GRAM_TARGETS["carbs"] - today_log.get("carbs", 0))
-    remaining_f = max(0, MACRO_GRAM_TARGETS["fat"] - today_log.get("fat", 0))
+def suggest_meal(today_log: dict, today_meals: list[dict], targets: dict | None = None) -> str:
+    t = targets or {
+        "calories": DAILY_CAL_TARGET,
+        "protein": MACRO_GRAM_TARGETS["protein"],
+        "carbs": MACRO_GRAM_TARGETS["carbs"],
+        "fat": MACRO_GRAM_TARGETS["fat"],
+    }
+    remaining_cal = max(0, t["calories"] - today_log.get("calories", 0))
+    remaining_p = max(0, t["protein"] - today_log.get("protein", 0))
+    remaining_c = max(0, t["carbs"] - today_log.get("carbs", 0))
+    remaining_f = max(0, t["fat"] - today_log.get("fat", 0))
 
     intake_lines = []
     for m in today_meals:
