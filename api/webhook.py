@@ -975,7 +975,10 @@ def _profile_keyboard() -> dict:
                 {"text": "⚖️ Змінити вагу", "callback_data": "profile:weight"},
                 {"text": "🎯 Змінити ціль", "callback_data": "profile:goal"},
             ],
-            [{"text": "📏 Історія ваги", "callback_data": "profile:history"}],
+            [
+                {"text": "💧 Ціль по воді", "callback_data": "profile:water"},
+                {"text": "📏 Історія ваги", "callback_data": "profile:history"},
+            ],
         ]
     }
 
@@ -987,6 +990,20 @@ def _goal_picker_keyboard() -> dict:
                 {"text": "🏋️ Набір", "callback_data": "profile:goal:set:gain"},
                 {"text": "⚖️ Підтримання", "callback_data": "profile:goal:set:maintain"},
                 {"text": "🔥 Схуднення", "callback_data": "profile:goal:set:lose"},
+            ],
+            [{"text": "⬅️ Назад", "callback_data": "profile:back"}],
+        ]
+    }
+
+
+def _water_goal_picker_keyboard() -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "1.5 л", "callback_data": "profile:water:set:1500"},
+                {"text": "2.0 л", "callback_data": "profile:water:set:2000"},
+                {"text": "2.5 л", "callback_data": "profile:water:set:2500"},
+                {"text": "3.0 л", "callback_data": "profile:water:set:3000"},
             ],
             [{"text": "⬅️ Назад", "callback_data": "profile:back"}],
         ]
@@ -1087,6 +1104,27 @@ def handle_profile_callback(conn, cb: dict) -> None:
         if chat_id and message_id:
             edit_message_text(chat_id, message_id, _format_profile_text(conn, user_id),
                               reply_markup=_profile_keyboard())
+        return
+
+    if action == "water":
+        if len(parts) >= 4 and parts[2] == "set":
+            try:
+                new_target = int(parts[3])
+            except ValueError:
+                answer_callback_query(cb_id, "Невірна ціль")
+                return
+            applied = set_water_target(conn, user_id, new_target)
+            answer_callback_query(cb_id, f"💧 Ціль: {applied} мл")
+            if chat_id and message_id:
+                edit_message_text(
+                    chat_id, message_id,
+                    _format_profile_text(conn, user_id),
+                    reply_markup=_profile_keyboard(),
+                )
+            return
+        answer_callback_query(cb_id)
+        if chat_id and message_id:
+            edit_message_reply_markup(chat_id, message_id, _water_goal_picker_keyboard())
         return
 
     if action == "history":
